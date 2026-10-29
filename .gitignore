@@ -1,7 +1,5 @@
-# test recordings and screenshots (hundreds of MB)
-assets/
+# test recordings (hundreds of MB)
 *.mp4
-*.webm
 
 # build output
 build/*.zip
