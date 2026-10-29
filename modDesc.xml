@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<modDesc descVersion="93">
+    <author>ubuntu811</author>
+    <version>0.1.0.0</version>
+    <title>
+        <en>Road Follow</en>
+    </title>
+    <description>
+        <en>Cruise control that steers: sit in a vehicle on a road or track, press the key, and it follows the road you are on. It reads the road and track layers of the WAILA map scan, so run that scan (or load a save that has it) first. Speed is capped by the vehicle's cruise control setting. Singleplayer only, early version.</en>
+    </description>
+    <multiplayer supported="false"/>
+
+    <iconFilename>icon.dds</iconFilename>
+
+    <dependencies>
+        <dependency>FS25_whatAmILookingAt</dependency>
+    </dependencies>
+
+    <specializations>
+        <specialization name="roadFollow" className="RoadFollow" filename="scripts/RoadFollow.lua" />
+    </specializations>
+
+    <extraSourceFiles>
+        <sourceFile filename="scripts/register.lua" />
+    </extraSourceFiles>
+
+    <actions>
+        <action name="ROADFOLLOW_TOGGLE" category="VEHICLE" />
+        <action name="ROADFOLLOW_SIGNAL_LEFT" category="VEHICLE" />
+        <action name="ROADFOLLOW_SIGNAL_RIGHT" category="VEHICLE" />
+        <action name="ROADFOLLOW_SPEED_UP" category="VEHICLE" />
+        <action name="ROADFOLLOW_SPEED_DOWN" category="VEHICLE" />
+    </actions>
+    <inputBinding>
+        <actionBinding action="ROADFOLLOW_TOGGLE">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_r" index="1" />
+        </actionBinding>
+        <actionBinding action="ROADFOLLOW_SIGNAL_LEFT">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_4" index="1" />
+        </actionBinding>
+        <actionBinding action="ROADFOLLOW_SIGNAL_RIGHT">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_6" index="1" />
+        </actionBinding>
+        <actionBinding action="ROADFOLLOW_SPEED_UP">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_8" index="1" />
+        </actionBinding>
+        <actionBinding action="ROADFOLLOW_SPEED_DOWN">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_2" index="1" />
+        </actionBinding>
+    </inputBinding>
+
+    <l10n>
+        <text name="input_ROADFOLLOW_TOGGLE">
+            <en>Road follow</en>
+        </text>
+        <text name="input_ROADFOLLOW_SIGNAL_LEFT">
+            <en>Road assist: signal left</en>
+        </text>
+        <text name="input_ROADFOLLOW_SIGNAL_RIGHT">
+            <en>Road assist: signal right</en>
+        </text>
+        <text name="input_ROADFOLLOW_SPEED_UP">
+            <en>Road assist: faster</en>
+        </text>
+        <text name="input_ROADFOLLOW_SPEED_DOWN">
+            <en>Road assist: slower</en>
+        </text>
+        <text name="ROADFOLLOW_START">
+            <en>Follow road</en>
+        </text>
+        <text name="ROADFOLLOW_STOP">
+            <en>Stop following road</en>
+        </text>
+        <text name="ROADFOLLOW_NEED_SCAN">
+            <en>Road Follow: no road data yet. Run the WAILA map scan first.</en>
+        </text>
+        <text name="ROADFOLLOW_NOT_ON_ROAD">
+            <en>Road Follow: not on a road. Drive onto a road and point along it.</en>
+        </text>
+        <text name="ROADFOLLOW_AIERROR_ROAD_ENDED">
+            <en>The road ended.</en>
+        </text>
+    </l10n>
+</modDesc>

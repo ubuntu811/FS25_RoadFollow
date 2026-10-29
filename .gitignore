@@ -1,0 +1,9 @@
+# test recordings and screenshots (hundreds of MB)
+assets/
+*.mp4
+*.webm
+
+# build output
+build/*.zip
+build/.build_staging/
+*.zip
