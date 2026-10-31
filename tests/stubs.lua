@@ -1,3 +1,7 @@
+-- The game's Lua has no coroutine library (RoadMapper once used one: it worked in these tests and failed in the game with "attempt to index nil with
+-- 'create'"): hide it here too, so that cannot happen again.
+coroutine = nil
+
 -- tiny test harness (same shape as the sibling mods' tests): check(name, condition), finish(name)
 local passed, failed = 0, 0
 function check(name, condition)

@@ -11,6 +11,8 @@ source(modDir .. "scripts/RoadMeander.lua")
 source(modDir .. "scripts/RoadHud.lua")
 source(modDir .. "scripts/RoadLead.lua")
 source(modDir .. "scripts/RoadMapper.lua")
+source(modDir .. "scripts/RoadAtlas.lua")
+source(modDir .. "scripts/RoadJunction.lua")
 source(modDir .. "scripts/RoadFieldCourse.lua")
 source(modDir .. "scripts/AIMessageErrorRoadEnded.lua")
 source(modDir .. "scripts/AITaskRoadFollow.lua")
@@ -84,6 +86,7 @@ RoadFollowDebugView = {}
 function RoadFollowDebugView:update(dt)
     if RoadFollow ~= nil then
         RoadFollow.registerWailaTab()
+        RoadFollow.hookLandscaping()
         RoadFollow.updateDebugView(dt)
         RoadFollow.updateRoadMap(dt)
     end
@@ -101,3 +104,7 @@ function RoadFollowDebugView:draw()
 end
 addModEventListener(RoadFollowDebugView)
 
+-- Landscaping edits (paint, sculpt, smooth ...) tell the road follower where the terrain changed (the map picture is a snapshot): see RoadFollow.hookLandscaping.
+if RoadFollow ~= nil then
+    RoadFollow.hookLandscaping()
+end

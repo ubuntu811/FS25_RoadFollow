@@ -29,6 +29,18 @@ RoadHud.BLINK_MS = 380
 RoadHud.MIN_SCALE_KMH = 30       -- the arc is never scaled for less than this
 RoadHud.ROTATION_SIGN = 1        -- flip (console: roadFollowHudFlip) if the engine turns overlays the other way
 
+RoadHud.JUNCTION_Y = 0.32         -- centre of the junction picture (above the gauge)
+RoadHud.JUNCTION_LEG = 0.042      -- length of a leg
+RoadHud.JUNCTION_THICK = 0.0075
+RoadHud.JUNCTION_SNAP_DEG = 15    -- the legs are drawn at the nearest multiple of this, so the picture is tidy
+RoadHud.junctionEnabled = true
+RoadHud.JUNCTION_COLORS = {
+    approach = { 0.72, 0.77, 0.82, 1 },     -- the road you are on
+    leg = { 0.96, 0.97, 1.0, 1 },           -- a way on, lit
+    dim = { 0.96, 0.97, 1.0, 0.3 },         -- a way on, out
+    chosen = { 0.35, 0.95, 0.35, 1 },       -- the way the signal leads into (or straight on at a crossing, when nothing is signalled)
+}
+
 RoadHud.COLORS = {
     ok = { 0.35, 0.95, 0.35 },
     correct = { 1.0, 0.78, 0.2 },
@@ -122,6 +134,49 @@ function RoadHud.arrowBars(side, size, thickness)
     return bars
 end
 
+-- The picture of the junction ahead as bars (x, y of the centre in screen heights from the picture's centre, w, h, rot in degrees, color), up is straight on:
+-- the road you come along at the bottom, every way on as a leg at its angle. Nothing signalled: the ways on BLINK (the picture asks for a decision), except the
+-- way straight on at a crossing or a side road, which is shown green (that is where it goes without a signal). Signalled left / right: the leg that leads
+-- there is green and steady, the others stay dim and still. info comes from RoadJunction.ahead / describe.
+function RoadHud.junctionBars(info, intent, timeMs, legLength, thickness)
+    if info == nil then
+        return {}
+    end
+    legLength = legLength or RoadHud.JUNCTION_LEG
+    thickness = thickness or RoadHud.JUNCTION_THICK
+    local colors = RoadHud.JUNCTION_COLORS
+    local chosen = RoadJunction.chosenLeg(info, intent)
+    local signalled = intent == "left" or intent == "right"
+    local on = RoadHud.blinkOn(timeMs)
+    local snap = math.rad(RoadHud.JUNCTION_SNAP_DEG)
+    local bars = {}
+    for _, leg in ipairs(info.legs) do
+        local rel = math.floor(leg.rel / snap + 0.5) * snap
+        local dx, dy = math.sin(rel), math.cos(rel)            -- straight on is up, left is negative
+        local color
+        if leg.approach then
+            color = colors.approach
+        elseif leg == chosen then
+            color = colors.chosen
+        elseif signalled then
+            color = colors.dim
+        else
+            color = on and colors.leg or colors.dim
+        end
+        bars[#bars + 1] = {
+            x = dx * legLength / 2, y = dy * legLength / 2, w = legLength, h = (leg == chosen) and thickness * 1.6 or thickness,
+            rot = math.deg(math.atan2(dy, dx)), color = color, leg = leg,
+        }
+    end
+    bars[#bars + 1] = { x = 0, y = -legLength - thickness, w = thickness * 1.8, h = thickness * 1.8, rot = 0, color = colors.approach, you = true }
+    return bars
+end
+
+-- The distance as shown: to the nearest ten metres, "120 m".
+function RoadHud.junctionDistanceText(distance)
+    return string.format("%d m", math.max(10, math.floor((distance or 0) / 10 + 0.5) * 10))
+end
+
 -- ===== drawing (engine) =====
 
 local function getOverlay()
@@ -203,6 +258,28 @@ function RoadHud.draw(m)
         setTextColor(color[1], color[2], color[3], 1)
         renderText(cx, cy - RoadHud.RADIUS * s * 0.72 - 0.026 * s, 0.014 * s, m.label)
     end
+    setTextAlignment(RenderText.ALIGN_LEFT)
+    setTextColor(1, 1, 1, 1)
+end
+
+-- m: junction (RoadJunction.ahead), signal ("left" "right" or other: no decision), timeMs
+function RoadHud.drawJunction(m)
+    local overlay = getOverlay()
+    if not RoadHud.junctionEnabled or m.junction == nil or overlay == nil or renderOverlay == nil then
+        return
+    end
+    local aspect = g_screenAspectRatio or (16 / 9)
+    local s = RoadHud.scale
+    local cx, cy = RoadHud.X, RoadHud.JUNCTION_Y
+    -- a dim panel behind, so the picture reads on any ground
+    bar(overlay, cx, cy - 0.006 * s, 0.1 * s / aspect, 0.105 * s, 0, { 0, 0, 0, 0.35 })
+    for _, b in ipairs(RoadHud.junctionBars(m.junction, m.signal, m.timeMs, RoadHud.JUNCTION_LEG * s, RoadHud.JUNCTION_THICK * s)) do
+        bar(overlay, cx + b.x / aspect, cy + b.y, b.w / aspect, b.h, b.rot, b.color)
+    end
+    setOverlayRotation(overlay, 0, 0, 0)
+    setTextAlignment(RenderText.ALIGN_CENTER)
+    setTextColor(0.9, 0.93, 0.97, 1)
+    renderText(cx, cy - 0.062 * s, 0.014 * s, RoadHud.junctionDistanceText(m.junction.distance))
     setTextAlignment(RenderText.ALIGN_LEFT)
     setTextColor(1, 1, 1, 1)
 end

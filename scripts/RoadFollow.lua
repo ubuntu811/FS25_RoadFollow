@@ -69,6 +69,10 @@ RoadFollow.DEFAULT_FRONT_OVERHANG = 3        -- metres from the steering node to
 RoadFollow.JUNCTION_TURN_KMH = 15           -- speed through a turn at a junction
 RoadFollow.JUNCTION_HOLD_MS = 3000          -- waiting at a junction or turning in one is not "too slow" for this long after it was last seen
 RoadFollow.BLACKBOX_MS = 100               -- the last seconds of driving are kept, one entry this often ...
+RoadFollow.BEND_LOG = true                 -- every bend the assist drives is logged (always, not only with the debug lines): the numbers an understeer is read from
+RoadFollow.BEND_LOG_KAPPA = 0.004          -- 1/m: a line that bends at least this much (radius 250 m) is a bend
+RoadFollow.BEND_LOG_MS = 500               -- one line this often while in a bend
+RoadFollow.BEND_END_MS = 1500              -- the bend is over when the line has been straighter than that for this long
 RoadFollow.BLACKBOX_KEEP = 80              -- ... this many (8 s); written to the log when the assist stops the vehicle or the player has to take over
 RoadFollow.MAP_BORDER_MARGIN = 4           -- a line is cut this far inside the map border (the world edge is a wall; roads and splines run right off it)
 RoadFollow.STUCK_ASK_KMH = 5               -- standing still while this much speed is asked for counts as stuck
@@ -83,7 +87,7 @@ RoadFollow.CAPTURE_SECONDS = 3.0           -- ... as far ahead as this many seco
 RoadFollow.BLEND_MIN = 25                  -- the join eases onto the road over 3 s of travel, 25 to 60 m
 RoadFollow.BLEND_MAX = 60
 RoadFollow.WHEEL_STEP_KMH = 5              -- the mouse wheel changes the cruise speed by this much per notch while the assist drives (0 = off)
-RoadFollow.MOUSE_SIGNALS = true             -- left / right mouse button = turn signal while the assist drives
+RoadFollow.MOUSE_SIGNALS = false            -- left / right mouse button = turn signal while the assist drives (off: the signal keys are the signal, see RoadFollow.signalKey)
 RoadFollow.INTENT_TIMEOUT_MS = 30000       -- a signal that was never used is dropped after this long
 RoadFollow.INTENT_DONE_DEG = 50            -- a turn is done when the heading has changed this much towards the signal
 RoadFollow.DETECT_VEHICLES = true          -- rays along the line for traffic and other vehicles ahead (RoadLead.lua); the base game's handler does not see traffic cars
@@ -125,7 +129,7 @@ RoadFollow.ASSIST_STEER_DEADZONE = 0.08
 RoadFollow.TAP_HOLD_MS = 600               -- a steering key held longer than this takes over; released sooner it is a tap = turn signal
 RoadFollow.STEER_LEFT_SIGN = -1            -- sign of the steering axis for "left" (confirmed live: the left key is the negative axis) (console: roadFollowTapFlip, if a left tap signals right)
 RoadFollow.TAP_INSTANT = true              -- with the assist driving, the signal is set the moment the key goes down (the line shows at once), and undone if the press turns out to be a hold
-RoadFollow.TAP_SIGNALS = true              -- a tap on the steering keys sets the turn signal
+RoadFollow.TAP_SIGNALS = false             -- a tap on the steering keys sets the turn signal (off: the signal keys are the signal; steering at all is then a hand-over at once)
 RoadFollow.ASSIST_PEDAL_DEADZONE = 0.1
 RoadFollow.ASSIST_MIN_SPEED_KMH = 5        -- to engage
 RoadFollow.ASSIST_STAY_SPEED_KMH = 1       -- once engaged it stays on down to this (a slow bend must not switch it off)
@@ -242,7 +246,9 @@ local function isForestFloor(tracer, x, z)
 end
 
 function RoadFollow.clearForestFloorCache()
-    forestFloorCache, forestFloorCount = {}, 0
+    if forestFloorCount > 0 then
+        forestFloorCache, forestFloorCount = {}, 0
+    end
 end
 
 -- The road paint under a point (read from the terrain, remembered per 0.5 m cell): used to find the stone core of a wide
@@ -309,13 +315,194 @@ local function makeFine()
     end
 end
 
+-- ===== terrain the player has edited =====
+-- The map picture (WAILA's road and trail bitmaps) is a snapshot of the terrain: paint a road, or paint one over, in the construction screen and it is wrong until
+-- the whole map is scanned again. So every landscaping edit (paint, sculpt, smooth ... they all go through LandscapingSculptEvent, with a position and a brush
+-- radius) marks the 8 m cells it touches, and a marked cell is read from the terrain paint itself, live, instead of from the snapshot: a road painted is followed
+-- at once, one painted over is gone. The road map starts again when the construction screen has closed.
+RoadFollow.EDIT_CELL = 8.0
+RoadFollow.EDIT_MAX_CELLS = 100000           -- cells of 8 m: about 6 km2 of edits
+RoadFollow.EDIT_QUIET_MS = 1000          -- the road map starts again only when no edit has been made for this long ...
+RoadFollow.EDIT_RESTART_MIN_MS = 5000    -- ... and not more often than this (a terraforming machine edits all the time: marking is cheap, a restart is a whole new sweep)
+local editedCells, editedCount = {}, 0
+RoadFollow.mapStale = false
+
+local function editKey(x, z)
+    return math.floor(x / RoadFollow.EDIT_CELL) * 100003 + math.floor(z / RoadFollow.EDIT_CELL)
+end
+
+function RoadFollow.noteTerrainEdit(x, z, radius)
+    if x == nil or z == nil then
+        return
+    end
+    radius = math.max(1, math.min(40, radius or 8))
+    RoadFollow.noteTerrainRect(x - radius, z - radius, x + radius, z + radius)
+end
+
+function RoadFollow.editedCellCount()
+    return editedCount
+end
+
+-- Terrain edits and where to hear of them. There is no "terrain changed" message in the game (MessageType has none); the funnel is TerrainDeformation: every
+-- deformation (the construction screen's paint, sculpt and smooth, terraforming mods like TerraFarm, trail painting, placeables levelling ground) collects its areas with
+-- addSoftSquareBrush / addSoftCircleBrush / addArea / addPolygonalArea and ends in apply (the engine's applyTerrainDeformation), which the TerrainDeformationQueue runs as a
+-- job and reports with onJobComplete. So: the areas are noted on the object as they are added, marked when apply is called for real (not a preview), and the map is
+-- told once more when a job has completed (the paint has landed then; before it, a read would still see the old ground). LandscapingSculptEvent (the construction screen's
+-- brushes: a position and a radius) is hooked too, for edits whose deformation is made out of our sight (the server of a game we are a client of).
+-- Idempotent; called from register.lua and from the mod's update, in case the game's classes were not there yet.
+local function noteBounds(self, minX, minZ, maxX, maxZ)
+    local b = self.rfBounds
+    if b == nil then
+        self.rfBounds = { minX, minZ, maxX, maxZ }
+    else
+        b[1], b[2], b[3], b[4] = math.min(b[1], minX), math.min(b[2], minZ), math.max(b[3], maxX), math.max(b[4], maxZ)
+    end
+end
+
+-- An edited rectangle: its 8 m cells are marked (read live from now on) and it is added to the pending edit (the box round all edits since the map last started
+-- again; updateRoadMap decides when, and whether, that matters). Cheap per call: a few table writes for the cells not marked yet.
+function RoadFollow.noteTerrainRect(minX, minZ, maxX, maxZ)
+    local cell = RoadFollow.EDIT_CELL
+    if editedCount < RoadFollow.EDIT_MAX_CELLS then
+        for cx = math.floor(minX / cell), math.floor(maxX / cell) do
+            for cz = math.floor(minZ / cell), math.floor(maxZ / cell) do
+                local key = cx * 100003 + cz
+                if not editedCells[key] then
+                    editedCells[key] = true
+                    editedCount = editedCount + 1
+                    if editedCount >= RoadFollow.EDIT_MAX_CELLS then
+                        break
+                    end
+                end
+            end
+            if editedCount >= RoadFollow.EDIT_MAX_CELLS then
+                break
+            end
+        end
+    end
+    local box = RoadFollow.pendingEdit
+    if box == nil then
+        RoadFollow.pendingEdit = { minX, minZ, maxX, maxZ }
+    else
+        box[1], box[2], box[3], box[4] = math.min(box[1], minX), math.min(box[2], minZ), math.max(box[3], maxX), math.max(box[4], maxZ)
+    end
+    RoadFollow.mapStale = true
+    RoadFollow.editAt = g_time or 0
+    RoadFollow.clearForestFloorCache()
+end
+
+function RoadFollow.hookLandscaping()
+    if RoadFollow.landscapingHooked or Utils == nil then
+        return
+    end
+    local hooked = false
+    if LandscapingSculptEvent ~= nil and LandscapingSculptEvent.new ~= nil then
+        hooked = true
+        LandscapingSculptEvent.new = Utils.appendedFunction(LandscapingSculptEvent.new, function(validateOnly, operation, x, y, z, nx, ny, nz, d, minY, maxY, radius)
+            if validateOnly ~= true then
+                pcall(RoadFollow.noteTerrainEdit, x, z, radius)
+            end
+        end)
+    end
+    local TD = TerrainDeformation
+    if TD ~= nil and TD.apply ~= nil then
+        hooked = true
+        if TD.addSoftSquareBrush ~= nil then
+            TD.addSoftSquareBrush = Utils.appendedFunction(TD.addSoftSquareBrush, function(self, x, z, size)
+                if x ~= nil and z ~= nil then
+                    local h = (size or 4) / 2
+                    noteBounds(self, x - h, z - h, x + h, z + h)
+                end
+            end)
+        end
+        if TD.addSoftCircleBrush ~= nil then
+            TD.addSoftCircleBrush = Utils.appendedFunction(TD.addSoftCircleBrush, function(self, x, z, radius)
+                if x ~= nil and z ~= nil then
+                    local r = radius or 4
+                    noteBounds(self, x - r, z - r, x + r, z + r)
+                end
+            end)
+        end
+        if TD.addArea ~= nil then
+            TD.addArea = Utils.appendedFunction(TD.addArea, function(self, x, y, z, s1x, s1y, s1z, s2x, s2y, s2z)
+                if x ~= nil and z ~= nil and s1x ~= nil and s2x ~= nil then
+                    local xs, zs = { x, x + s1x, x + s2x, x + s1x + s2x }, { z, z + s1z, z + s2z, z + s1z + s2z }
+                    noteBounds(self, math.min(xs[1], xs[2], xs[3], xs[4]), math.min(zs[1], zs[2], zs[3], zs[4]), math.max(xs[1], xs[2], xs[3], xs[4]), math.max(zs[1], zs[2], zs[3], zs[4]))
+                end
+            end)
+        end
+        if TD.addPolygonalArea ~= nil then
+            TD.addPolygonalArea = Utils.appendedFunction(TD.addPolygonalArea, function(self, vertexPositions)
+                -- the vertices as a flat list x, z, x, z ... or a list of { x, z }
+                if type(vertexPositions) == "table" then
+                    local minX, minZ, maxX, maxZ = math.huge, math.huge, -math.huge, -math.huge
+                    local flat = type(vertexPositions[1]) == "number"
+                    local step = flat and 2 or 1
+                    for i = 1, #vertexPositions, step do
+                        local vx, vz
+                        if flat then
+                            vx, vz = vertexPositions[i], vertexPositions[i + 1]
+                        else
+                            local v = vertexPositions[i]
+                            vx, vz = v[1] or v.x, v[2] or v.z
+                        end
+                        if type(vx) == "number" and type(vz) == "number" then
+                            minX, minZ, maxX, maxZ = math.min(minX, vx), math.min(minZ, vz), math.max(maxX, vx), math.max(maxZ, vz)
+                        end
+                    end
+                    if minX <= maxX then
+                        noteBounds(self, minX, minZ, maxX, maxZ)
+                    end
+                end
+            end)
+        end
+        if TD.clearAreas ~= nil then
+            TD.clearAreas = Utils.appendedFunction(TD.clearAreas, function(self) self.rfBounds = nil end)
+        end
+        TD.apply = Utils.appendedFunction(TD.apply, function(self, previewOnly)
+            local b = self.rfBounds
+            if previewOnly ~= true and b ~= nil then
+                pcall(RoadFollow.noteTerrainRect, b[1], b[2], b[3], b[4])
+            end
+        end)
+    end
+    if TerrainDeformationQueue ~= nil and TerrainDeformationQueue.onJobComplete ~= nil then
+        hooked = true
+        TerrainDeformationQueue.onJobComplete = Utils.appendedFunction(TerrainDeformationQueue.onJobComplete, function()
+            -- the paint has landed: the quiet period starts again from now (a job that was a preview, or not ours to know of, changes nothing)
+            if RoadFollow.pendingEdit ~= nil then
+                RoadFollow.mapStale = true
+                RoadFollow.editAt = g_time or 0
+            end
+        end)
+    end
+    RoadFollow.landscapingHooked = hooked
+end
+
+-- What the terrain paint says at a point, read live (WAILA's learned layer classes): the learned road paint is a road, forest-floor paint with no foliage on it is
+-- a track (a forest floor is stone / dirt / FOLIAGE), anything else is nothing.
+local function liveClass(tracer, x, z)
+    local class = tracer.getLayerClassAt(x, z)
+    if class == tracer.LAYER_CLASS_ROAD then
+        return 2
+    end
+    if class == tracer.LAYER_CLASS_FOREST and not (tracer.hasFoliageAt ~= nil and tracer.hasFoliageAt(x, z)) then
+        return 1
+    end
+    return 0
+end
+
 local function makeSampler()
     local tracer = getTracer()
     if tracer == nil or tracer.sampleDrivable == nil then
         return nil
     end
     local ignoreForestFloor = RoadFollow.IGNORE_FOREST_FLOOR and tracer.getLayerClassAt ~= nil and tracer.LAYER_CLASS_FOREST ~= nil
+    local canReadLive = tracer.getLayerClassAt ~= nil and tracer.LAYER_CLASS_ROAD ~= nil and tracer.LAYER_CLASS_FOREST ~= nil
     return function(x, z)
+        if editedCount > 0 and canReadLive and editedCells[editKey(x, z)] then
+            return liveClass(tracer, x, z)             -- edited since the map was scanned: the snapshot is wrong here
+        end
         local class = tracer.sampleDrivable(x, z)
         if class == 1 and ignoreForestFloor and isForestFloor(tracer, x, z) then
             return 0                           -- worn ground whose paint is the forest floor's: not a track
@@ -1063,6 +1250,24 @@ function RoadFollow.signal(vehicle, side)
     return true
 end
 
+-- The signal keys (Right Ctrl + left / right): the turn signal, whatever the vehicle is doing: standing still, cruise control off, the assist not driving.
+-- The same side again puts it out, the other side switches it. With the assist driving it is also the assist's signal for the next junction; without,
+-- it is the vehicle's own turn light (which the assist reads as the signal as soon as it drives). Returns true when something was set.
+function RoadFollow.signalKey(vehicle, side)
+    if vehicle == nil then
+        return false
+    end
+    local spec = getSpec(vehicle)
+    if spec ~= nil and spec.assist ~= nil and spec.assist.engaged then
+        return RoadFollow.signal(vehicle, side)
+    end
+    if spec ~= nil and spec.assist ~= nil and spec.assist.hazard then
+        spec.assist.hazard = false              -- (a hazard the assist set at a stop: a signal key is the player taking the lights back)
+    end
+    RoadFollow.signalLights(vehicle, side)
+    return true
+end
+
 -- A tap on a steering key while the assist is NOT driving: the vehicle's own turn lights are set, switched or cleared
 -- the same way (the same side again puts a light out, the other side switches it), so a light can always be put out again. The
 -- assist reads them as the signal as soon as it drives. Only the lights: nothing else is touched.
@@ -1137,9 +1342,74 @@ local function blackboxWrite(assist, why)
 end
 
 
+-- ===== the bend log =====
+-- While the assist drives a bend (the line bends at least BEND_LOG_KAPPA) a line is logged every BEND_LOG_MS, and a summary when it is over. Signs as the
+-- steering reads them: e > 0 the line is to the left of the vehicle, kff > 0 a bend to the left; so e * kff > 0 is the vehicle on the OUTSIDE of the bend
+-- (what an understeer does), e * kff < 0 the inside.
+local function bendSummary(assist, why)
+    local rec = assist.bendRec
+    assist.bendRec = nil
+    if rec == nil then
+        return
+    end
+    log("bend end (%s): %.1f s, line curvature up to %.4f (radius %.0f m), speed %.0f -> lowest %.0f km/h, furthest OUTSIDE the line %.2f m, INSIDE %.2f m, steering capped for %.1f s (raw / allowed up to %.2f), understeer gain %.2f, made / asked lowest %s",
+        tostring(why), rec.ms / 1000, rec.kMax, rec.kMax > 0 and 1 / rec.kMax or 0, rec.v0, rec.vMin, rec.outside, rec.inside, rec.satMs / 1000, rec.capMax, rec.gain,
+        rec.ratioMin ~= nil and string.format("%.2f", rec.ratioMin) or "not measured")
+end
+
+function RoadFollow.recordBend(self, assist, dt, speedKmh, askedKmh)
+    if not RoadFollow.BEND_LOG then
+        return
+    end
+    local parts = assist.ffParts or {}
+    local kff = parts.kff or 0
+    local rec = assist.bendRec
+    if math.abs(kff) >= RoadFollow.BEND_LOG_KAPPA then
+        if rec == nil then
+            rec = { ms = 0, quietMs = 0, lineMs = 0, outside = 0, inside = 0, satMs = 0, capMax = 0, kMax = 0, v0 = speedKmh, vMin = speedKmh, ratioMin = nil, gain = 1 }
+            assist.bendRec = rec
+            log("bend start: %.1f km/h, line curvature %.4f (radius %.0f m)", speedKmh, kff, 1 / math.abs(kff))
+        end
+        rec.quietMs = 0
+        rec.ms = rec.ms + dt
+        rec.lineMs = rec.lineMs + dt
+        local e = parts.e or 0
+        if e * kff > 0 then
+            rec.outside = math.max(rec.outside, math.abs(e))
+        else
+            rec.inside = math.max(rec.inside, math.abs(e))
+        end
+        rec.kMax = math.max(rec.kMax, math.abs(kff))
+        rec.vMin = math.min(rec.vMin, speedKmh)
+        rec.gain = assist.understeerGain or 1
+        if assist.understeerRatio ~= nil then
+            rec.ratioMin = rec.ratioMin ~= nil and math.min(rec.ratioMin, assist.understeerRatio) or assist.understeerRatio
+        end
+        if assist.saturated then
+            rec.satMs = rec.satMs + dt
+        end
+        if assist.ffRaw ~= nil and assist.ffLimit ~= nil and assist.ffLimit > 0 then
+            rec.capMax = math.max(rec.capMax, math.abs(assist.ffRaw) / assist.ffLimit)
+        end
+        if rec.lineMs >= RoadFollow.BEND_LOG_MS then
+            rec.lineMs = 0
+            log("bend: %.1f km/h (asked %.0f), line %+.4f cmd %+.4f (allowed %.4f%s), wheel %s, e %+.2f m (%s) psi %+.1f deg, understeer gain %.2f made / asked %s",
+                speedKmh, askedKmh or 0, kff, assist.kappa or 0, assist.ffLimit or 0, assist.saturated and ", CAPPED" or "",
+                tostring(self.rotatedTime and string.format("%.2f", self.rotatedTime) or "?"), e, (e * kff > 0) and "outside" or "inside", math.deg(parts.psi or 0),
+                assist.understeerGain or 1, assist.understeerRatio ~= nil and string.format("%.2f", assist.understeerRatio) or "-")
+        end
+    elseif rec ~= nil then
+        rec.quietMs = rec.quietMs + dt
+        if rec.quietMs >= RoadFollow.BEND_END_MS then
+            bendSummary(assist, "straight again")
+        end
+    end
+end
+
 local function disengage(assist, reason)
     if assist.engaged then
         log("assist off: %s", reason)
+        bendSummary(assist, "assist off: " .. tostring(reason))
         if WailaConfig ~= nil and WailaConfig.isDebugLog ~= nil and WailaConfig.isDebugLog()
             and (reason == "pedal" or reason == "player steering" or reason == "handbrake" or tostring(reason):find("stopped", 1, true)) then
             blackboxWrite(assist, reason)
@@ -1258,8 +1528,23 @@ local function steerInput(self, assist, axisSide, dt)
     return false      -- still deciding between tap and hold: the assist drives on
 end
 
+-- True while a Ctrl key is held: the signal keys are Ctrl + the left / right keys, which are steering keys too, so the steering axis is not looked at then (it
+-- is not the player steering)
+function RoadFollow.ctrlHeld()
+    if Input == nil or Input.isKeyPressed == nil then
+        return false
+    end
+    local ok, held = pcall(function()
+        return (Input.KEY_rctrl ~= nil and Input.isKeyPressed(Input.KEY_rctrl)) or (Input.KEY_lctrl ~= nil and Input.isKeyPressed(Input.KEY_lctrl))
+    end)
+    return ok and held == true
+end
+
 function RoadFollow.assistTick(self, spec, axisForward, axisSide, doHandbrake, dt)
     local assist = spec.assist
+    if axisSide ~= 0 and RoadFollow.ctrlHeld() then
+        axisSide = 0
+    end
     if steerInput(self, assist, axisSide, dt) then
         assist.steerGraceMs = RoadFollow.ASSIST_STEER_GRACE_MS
     elseif assist.steerGraceMs > 0 then
@@ -2043,6 +2328,7 @@ function RoadFollow.assistDrive(self, spec, dt)
                 tostring(self.rotatedTime and string.format("%.3f", self.rotatedTime) or "?"), assist.understeerGain or 1, assist.understeerRatio or 0)
         end
     end
+    RoadFollow.recordBend(self, assist, dt, speedKmh, maxSpeed)
 end
 
 -- The mouse wheel as the speed knob of a real cruise control: up = faster, down = slower, in steps of
@@ -2281,6 +2567,19 @@ function RoadFollow:onDraw(isActiveForInput, isActiveForInputIgnoreSelection, is
             RoadHud.enabled = false
             print(string.format("[RoadFollow] HUD switched off after an error: %s (roadFollowHud switches it back on)", tostring(err)))
         end
+        -- the next junction ahead: T, Y, +, a side road; blinking until a signal is given, then the way it leads into is green
+        local junction = RoadHud.junctionEnabled and RoadFollow.junctionInfo(self) or nil
+        if junction ~= nil then
+            local intent = nil
+            if not assist.hazard then
+                intent = RoadFollow.getIntent(self)
+            end
+            local drawn, drawError = pcall(RoadHud.drawJunction, { junction = junction, signal = intent, timeMs = g_time })
+            if not drawn then
+                RoadHud.junctionEnabled = false
+                print(string.format("[RoadFollow] junction picture switched off after an error: %s", tostring(drawError)))
+            end
+        end
     end
     if isActiveForInputIgnoreSelection then
         RoadFollow.drawRoadMap()
@@ -2484,14 +2783,20 @@ function RoadFollow.drawDebugView(self, spec)
 end
 
 
--- ===== the road map: the roads round where you stand, as debug lines (roadFollowMap) =====
--- Rings are swept round the point and every road a ring crosses is walked (RoadMapper); the result is drawn: map splines blue, roads the
--- map picture shows white, gravel / worn tracks orange (a trace that lies on a spline is not drawn twice), junctions green, dead ends red,
--- the rings pale pink. The work is spread over frames (MAP_BUDGET map pixels each).
-RoadFollow.MAP_BUDGET = 400
-RoadFollow.MAP_SECONDS = 120
+-- ===== the road map: the roads round you, kept up to date while you move, as debug lines (roadFollowMap) =====
+-- RoadAtlas: the rings are swept once, then only the leading arc of the circle is read as you move; every road found is walked and its centre line kept.
+-- Drawn: the two lanes of a road (your lane white, the oncoming one light blue), gravel / worn tracks orange, junctions green, dead ends red, the circle pale pink. The work is spread over frames
+-- (MAP_BUDGET map reads each at most) and nothing is read while you stand still. The log says what it costs (reads and ms per second) every MAP_LOG_MS.
+RoadFollow.MAP_BUDGET = 120
 RoadFollow.MAP_RADIUS = 90
-RoadFollow.roadMap = nil
+RoadFollow.MAP_LOG_MS = 5000
+RoadFollow.MAP_DRAW_SHARE = 1.25     -- lines further than this (x radius) from the centre are not drawn
+RoadFollow.FOREST_FLOOR_TRACKS = true -- for the road map and the junction picture (not for driving): forest-floor paint out in the open (not under forest, no tree or building there) is a track
+RoadFollow.JUNCTION_HUD = true       -- the picture of the next junction ahead (T, Y, +, a side road) above the gauge; the road atlas runs while you drive for it
+RoadFollow.JUNCTION_SECONDS = 8      -- it shows a junction this many seconds ahead (at least 120 m, at most the atlas's radius)
+RoadFollow.JUNCTION_MIN_METRES = 120
+RoadFollow.JUNCTION_POLL_MS = 100
+RoadFollow.roadMap = nil             -- the atlas and what is made of it; .show = the debug lines are drawn
 
 local function viewerPosition()
     local vehicle = RoadFollow.getControlledVehicle()
@@ -2510,69 +2815,270 @@ local function viewerPosition()
     return nil
 end
 
-function RoadFollow.startRoadMap(radius)
-    local sample = makeSampler()
+-- The sampler of the road map: the driving sampler, plus tracks the map picture does not call roads. A sandy or cobbled track is often painted with the
+-- layer the map also uses for forest floors, which WAILA has learned as "forest floor" (not a road, and no worn-trail mark either): the track is then not in the
+-- map picture at all, and the walks along it are lost. A real forest floor is that paint WITH FOLIAGE (stone / dirt / foliage mix); forest-floor paint with
+-- no foliage on it, not under forest (WAILA's forest picture) and with no tree or building on it is a worn path, a track or a yard (WAILA's own inspector says
+-- so): it counts as a track, class 1. A yard is wider than any road (the walker refuses what is
+-- wider than 14 m), so it adds no lines. Cached per 2 m cell. Only for the map: what the vehicle follows is decided by makeSampler.
+local trackFloorCache, trackFloorCount = {}, 0
+local function makeAtlasSampler()
+    local base = makeSampler()
+    if base == nil or not RoadFollow.FOREST_FLOOR_TRACKS then
+        return base
+    end
+    local tracer = getTracer()
+    if tracer == nil or tracer.getLayerClassAt == nil or tracer.LAYER_CLASS_FOREST == nil or tracer.sampleForest == nil then
+        return base
+    end
+    return function(x, z)
+        local class = base(x, z)
+        if class ~= 0 or (editedCount > 0 and editedCells[editKey(x, z)]) then
+            return class                         -- (an edited cell was read live already)
+        end
+        local key = math.floor(x / 2) * 100003 + math.floor(z / 2)
+        local known = trackFloorCache[key]
+        if known == nil then
+            if trackFloorCount > 40000 then
+                trackFloorCache, trackFloorCount = {}, 0
+            end
+            known = tracer.getLayerClassAt(x, z) == tracer.LAYER_CLASS_FOREST and not tracer.sampleForest(x, z)
+                and not (tracer.hasFoliageAt ~= nil and tracer.hasFoliageAt(x, z))
+                and not (tracer.sampleTree ~= nil and tracer.sampleTree(x, z)) and not (tracer.sampleBuilding ~= nil and tracer.sampleBuilding(x, z))
+            trackFloorCache[key] = known
+            trackFloorCount = trackFloorCount + 1
+        end
+        return known and 1 or 0
+    end
+end
+RoadFollow.makeAtlasSampler = makeAtlasSampler
+
+-- The atlas state is made when it is wanted: for the debug lines (roadFollowMap) or, while the player is in a vehicle, for the junction picture.
+local function newMapState(radius)
+    local sample = makeAtlasSampler()
     if sample == nil then
-        return false, "no map picture yet (run the map scan first)"
+        return nil
     end
-    local x, y, z = viewerPosition()
-    if x == nil then
-        return false, "could not tell where you are"
-    end
-    radius = math.max(30, math.min(200, tonumber(radius) or RoadFollow.MAP_RADIUS))
-    local radii = {}
-    for _, f in ipairs({ 0.17, 0.39, 0.67, 1.0 }) do
-        radii[#radii + 1] = math.floor(radius * f + 0.5)
-    end
-    RoadFollow.roadMap = {
-        mapper = RoadMapper.new(sample, x, z, { radius = radius, radii = radii }),
-        x = x, z = z, radius = radius, ms = 0, frames = 0, tagged = false,
-    }
-    return true, string.format("mapping the roads within %d m of %.0f %.0f", radius, x, z)
+    return { atlas = RoadAtlas.new(sample, { radius = radius }), windowMs = 0, windowReads = 0, windowWork = 0, readsPerSecond = 0, workMs = 0, pollMs = 0, show = false }
 end
 
--- Which traces lie on a stored path (so the path is drawn, not the trace): at least 60% of a trace's points within 4 m of one.
-local function tagSplines(map)
-    local store = g_currentMission ~= nil and g_currentMission.wailaPaths or nil
-    map.onSpline = {}
-    if store == nil or store.findNear == nil then
+function RoadFollow.startRoadMap(radius)
+    radius = math.max(30, math.min(200, tonumber(radius) or RoadFollow.MAP_RADIUS))
+    local state = newMapState(radius)
+    if state == nil then
+        return false, "no map picture yet (run the map scan first)"
+    end
+    state.show = true
+    RoadFollow.roadMap = state
+    return true, string.format("mapping the roads round you (at least %d m, more at speed: 6 s of road ahead), following you (the same command again switches it off)", radius)
+end
+
+-- The next junction ahead of the controlled vehicle (RoadJunction.ahead), for the picture; polled every JUNCTION_POLL_MS.
+local function pollJunction(map, vehicle, x, z, speedMs)
+    if vehicle == nil or vehicle.getAIDirectionNode == nil then
+        map.junction = nil
         return
     end
-    for i, trace in ipairs(map.mapper.traces) do
-        local near, total = 0, 0
-        for k = 1, #trace.points, 2 do
-            total = total + 1
-            if #store.findNear(trace.points[k][1], trace.points[k][2], 4.0) > 0 then
-                near = near + 1
-            end
-        end
-        map.onSpline[i] = total > 0 and near / total >= 0.6
-    end
+    local hx, _, hz = localDirectionToWorld(vehicle:getAIDirectionNode(), 0, 0, 1)
+    local maxDist = math.min(map.atlas.radius, math.max(RoadFollow.JUNCTION_MIN_METRES, speedMs * RoadFollow.JUNCTION_SECONDS))
+    map.junction = RoadJunction.ahead(map.atlas, x, z, hx, hz, maxDist)
 end
 
 function RoadFollow.updateRoadMap(dt)
+    if g_gui ~= nil and g_gui:getIsGuiVisible() then
+        return
+    end
+    local vehicle = RoadFollow.getControlledVehicle()
     local map = RoadFollow.roadMap
-    if map == nil then
-        return
-    end
-    map.ms = map.ms + dt
-    if map.ms > RoadFollow.MAP_SECONDS * 1000 then
-        RoadFollow.roadMap = nil
-        return
-    end
-    if not map.mapper.done then
-        map.frames = map.frames + 1
-        RoadMapper.step(map.mapper, RoadFollow.MAP_BUDGET)
-        if map.mapper.error ~= nil then
-            log("road map failed: %s", map.mapper.error)
+    local wanted = (map ~= nil and map.show) or (RoadFollow.JUNCTION_HUD and vehicle ~= nil)
+    if not wanted then
+        if map ~= nil and map.junction ~= nil then
+            map.junction = nil
         end
-    elseif not map.tagged then
-        map.tagged = true
-        tagSplines(map)
-        local m = map.mapper
-        log("road map: %d roads, %d junctions, %d dead ends, %d seeds skipped (road already walked), %d rejected (no road continues), %d map reads over %d frames",
-            #m.traces, #m.junctions, #m.deadEnds, m.seedsSkipped, m.seedsRejected, m.samples, map.frames)
+        return
     end
+    if map == nil then
+        map = newMapState(RoadFollow.MAP_RADIUS)
+        if map == nil then
+            return
+        end
+        RoadFollow.roadMap = map
+    end
+    local atlas = map.atlas
+    if RoadFollow.mapStale and (g_time or 0) - (RoadFollow.editAt or 0) >= RoadFollow.EDIT_QUIET_MS
+        and (g_time or 0) - (map.restartAt or -math.huge) >= RoadFollow.EDIT_RESTART_MIN_MS then
+        -- edits have stopped (the construction screen has closed, the terraforming machine has paused): start again, but only when an edit was anywhere near the
+        -- map. Far away it changes nothing (those cells are read live when the map gets there).
+        local box = RoadFollow.pendingEdit
+        RoadFollow.mapStale, RoadFollow.pendingEdit = false, nil
+        local keep = atlas.radius * RoadAtlas.KEEP_SHARE
+        if box ~= nil and box[3] >= atlas.cx - keep and box[1] <= atlas.cx + keep and box[4] >= atlas.cz - keep and box[2] <= atlas.cz + keep then
+            trackFloorCache, trackFloorCount = {}, 0
+            map.atlas = RoadAtlas.new(map.atlas.sample, { radius = map.atlas.baseRadius })
+            map.junction, map.splines = nil, nil
+            map.restartAt = g_time or 0
+            atlas = map.atlas
+            log("road map: the terrain was edited near here: mapping again (the edited places are read from the terrain paint)")
+        end
+    end
+    if atlas.error ~= nil then
+        if not map.errorLogged then
+            map.errorLogged = true
+            log("road map failed: %s", tostring(atlas.error))
+        end
+        return
+    end
+    local x, _, z = viewerPosition()
+    if x == nil then
+        return
+    end
+    local t0 = getTimeSec ~= nil and getTimeSec() or nil
+    local speedMs = vehicle ~= nil and vehicle.getLastSpeed ~= nil and (vehicle:getLastSpeed() or 0) / 3.6 or 0
+    RoadAtlas.update(atlas, x, z, speedMs)
+    RoadAtlas.step(atlas, RoadFollow.MAP_BUDGET)
+    map.pollMs = map.pollMs + dt
+    if map.pollMs >= RoadFollow.JUNCTION_POLL_MS then
+        map.pollMs = 0
+        if RoadFollow.JUNCTION_HUD then
+            pollJunction(map, vehicle, x, z, speedMs)
+        else
+            map.junction = nil
+        end
+    end
+    if t0 ~= nil then
+        map.windowWork = map.windowWork + (getTimeSec() - t0)
+    end
+    map.windowMs = map.windowMs + dt
+    if map.windowMs >= RoadFollow.MAP_LOG_MS then
+        local seconds = map.windowMs / 1000
+        map.readsPerSecond = (atlas.samples - map.windowReads) / seconds
+        map.workMs = map.windowWork * 1000 / seconds
+        if map.show then
+            -- what the roads are, and where the walks were lost: to tell a patchy map picture from a mistake of the walker
+            local pieces = {}
+            for i, piece in ipairs(atlas.pieces) do
+                if i <= 8 then
+                    RoadAtlas.lineOf(piece)
+                    local last = piece.points[#piece.points]
+                    pieces[#pieces + 1] = string.format("%s %.1f m wide (spread %.2f)%s, %d pts, ends %s at %.0f %.0f", piece.kind, piece.width, piece.widthCv or 0,
+                        piece.lanes ~= nil and ", 2 lanes" or "", #piece.points, tostring(piece.ending), last[1], last[2])
+                end
+            end
+            local ends = {}
+            for i, d in ipairs(atlas.deadEnds) do
+                if i <= 8 then
+                    ends[#ends + 1] = string.format("%.0f %.0f", d[1], d[2])
+                end
+            end
+            log("road map pieces: %s | dead ends at: %s", table.concat(pieces, "; "), table.concat(ends, ", "))
+            log("road map: radius %d m, %d road pieces, %d junctions, %d dead ends; %.0f map reads/s, %.1f ms/s of work; %d jobs queued; %d probes, %d extensions, %d sweeps, %d hits skipped, %d rejected",
+                atlas.radius, #atlas.pieces, #atlas.junctions, #atlas.deadEnds, map.readsPerSecond, map.workMs, #atlas.queue - atlas.head + 1, atlas.probes, atlas.extensions,
+                atlas.sweeps, atlas.seedsSkipped, atlas.seedsRejected)
+        end
+        map.windowMs, map.windowReads, map.windowWork = 0, atlas.samples, 0
+    end
+end
+
+-- the junction picture's data for a vehicle (only the one the player drives)
+function RoadFollow.junctionInfo(vehicle)
+    local map = RoadFollow.roadMap
+    if map == nil or not RoadFollow.JUNCTION_HUD or vehicle ~= RoadFollow.getControlledVehicle() then
+        return nil
+    end
+    return map.junction
+end
+
+-- The game's own lanes: the map's road splines near the centre (WAILA's path store, kind "spline": one per lane, in the direction of traffic), copied as runs of
+-- points inside the drawing range (the copies are ours: the heights drawn are kept on them), and a grid of their points to tell which of OUR lines they cover.
+-- Looked at again at most every SPLINE_REFRESH_MS, when the atlas has moved on.
+RoadFollow.SPLINE_REFRESH_MS = 400
+RoadFollow.SPLINE_COVER_METRES = 5.0
+RoadFollow.SPLINE_COVER_SHARE = 0.6
+RoadFollow.SPLINE_CELL = 6.0
+
+local function refreshSplines(map, atlas)
+    local key = atlas.probes * 1000 + atlas.sweeps
+    if map.splineKey == key and map.splines ~= nil then
+        return
+    end
+    if map.splines ~= nil and g_time ~= nil and map.splineAt ~= nil and g_time - map.splineAt < RoadFollow.SPLINE_REFRESH_MS then
+        return
+    end
+    map.splineKey, map.splineAt = key, g_time
+    map.splines, map.splineGrid, map.splineRevision = {}, {}, (map.splineRevision or 0) + 1
+    local store = g_currentMission ~= nil and g_currentMission.wailaPaths or nil
+    if store == nil or store.findNear == nil then
+        return
+    end
+    if store.importMapSplines ~= nil then
+        store.importMapSplines()                 -- (once per session: it does nothing after the first)
+    end
+    local reach = atlas.radius * RoadFollow.MAP_DRAW_SHARE
+    local reach2 = reach * reach
+    local cell = RoadFollow.SPLINE_CELL
+    for _, hit in ipairs(store.findNear(atlas.cx, atlas.cz, reach)) do
+        local path = hit.path
+        if path ~= nil and path.kind == "spline" and path.points ~= nil then
+            local runs, run = {}, nil
+            for _, p in ipairs(path.points) do
+                if (p[1] - atlas.cx) ^ 2 + (p[2] - atlas.cz) ^ 2 <= reach2 then
+                    if run == nil then
+                        run = {}
+                        runs[#runs + 1] = run
+                    end
+                    run[#run + 1] = { p[1], p[2] }
+                    local gk = math.floor(p[1] / cell) * 100003 + math.floor(p[2] / cell)
+                    local list = map.splineGrid[gk]
+                    if list == nil then
+                        list = {}
+                        map.splineGrid[gk] = list
+                    end
+                    list[#list + 1] = p
+                else
+                    run = nil
+                end
+            end
+            if #runs > 0 then
+                map.splines[#map.splines + 1] = { runs = runs, dx = hit.dx, dz = hit.dz }
+            end
+        end
+    end
+end
+
+-- Is this piece's line (mostly) lying on the game's lane splines? Then the splines are drawn and the piece is not. Cached for the piece's line and the spline set.
+local function pieceOnSpline(map, piece, line)
+    if map.splines == nil or #map.splines == 0 then
+        return false
+    end
+    if piece.splineRevision == map.splineRevision and piece.splineLine == line then
+        return piece.onSpline
+    end
+    local cell, near2 = RoadFollow.SPLINE_CELL, RoadFollow.SPLINE_COVER_METRES ^ 2
+    local total, covered = 0, 0
+    for i = 1, #line, 2 do
+        total = total + 1
+        local cx, cz = math.floor(line[i][1] / cell), math.floor(line[i][2] / cell)
+        local found = false
+        for dx = -1, 1 do
+            for dz = -1, 1 do
+                local list = map.splineGrid[(cx + dx) * 100003 + (cz + dz)]
+                if list ~= nil and not found then
+                    for _, q in ipairs(list) do
+                        if (q[1] - line[i][1]) ^ 2 + (q[2] - line[i][2]) ^ 2 <= near2 then
+                            found = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+        if found then
+            covered = covered + 1
+        end
+    end
+    piece.splineRevision, piece.splineLine = map.splineRevision, line
+    piece.onSpline = total > 0 and covered / total >= RoadFollow.SPLINE_COVER_SHARE
+    return piece.onSpline
 end
 
 local function mapHeight(point)
@@ -2582,23 +3088,14 @@ local function mapHeight(point)
     return point[3]
 end
 
-local function mapLine(points, color)
+-- a line as debug lines; segments with both ends further than sqrt(limit2) from (cx, cz) are left out
+local function mapLine(points, color, cx, cz, limit2)
     for i = 2, #points do
         local a, b = points[i - 1], points[i]
-        drawDebugLine(a[1], mapHeight(a), a[2], color[1], color[2], color[3], b[1], mapHeight(b), b[2], color[1], color[2], color[3], false)
-    end
-end
-
-local function mapRing(cx, cz, radius, color, cache)
-    if cache.points == nil then
-        cache.points = {}
-        local n = math.max(24, math.floor(radius * 1.2))
-        for i = 0, n do
-            local a = 2 * math.pi * i / n
-            cache.points[#cache.points + 1] = { cx + radius * math.cos(a), cz + radius * math.sin(a) }
+        if limit2 == nil or (a[1] - cx) ^ 2 + (a[2] - cz) ^ 2 <= limit2 or (b[1] - cx) ^ 2 + (b[2] - cz) ^ 2 <= limit2 then
+            drawDebugLine(a[1], mapHeight(a), a[2], color[1], color[2], color[3], b[1], mapHeight(b), b[2], color[1], color[2], color[3], false)
         end
     end
-    mapLine(cache.points, color)
 end
 
 local function mapPost(x, z, height, color)
@@ -2606,78 +3103,98 @@ local function mapPost(x, z, height, color)
     drawDebugLine(x, y, z, color[1], color[2], color[3], x, y + height, z, color[1], color[2], color[3], false)
 end
 
+local function mapCircle(cx, cz, radius, segments)
+    local points = {}
+    for i = 0, segments do
+        local angle = 2 * math.pi * i / segments
+        points[#points + 1] = { cx + radius * math.cos(angle), cz + radius * math.sin(angle) }
+    end
+    return points
+end
+
 function RoadFollow.drawRoadMap()
     local map = RoadFollow.roadMap
-    if map == nil or (g_gui ~= nil and g_gui:getIsGuiVisible()) then
+    if map == nil or not map.show or (g_gui ~= nil and g_gui:getIsGuiVisible()) then
         return
     end
     if map.drawnAt == g_time then
         return                       -- (called from a vehicle's onDraw and from the mod's draw: once a frame)
     end
     map.drawnAt = g_time
-    local m = map.mapper
-    map.ringCache = map.ringCache or {}
-    for i, radius in ipairs(m.rings) do
-        map.ringCache[i] = map.ringCache[i] or {}
-        mapRing(map.x, map.z, radius, { 1.0, 0.72, 0.85 }, map.ringCache[i])
+    local atlas = map.atlas
+    if not atlas.started then
+        return
     end
-    -- stored paths in range
-    local store = g_currentMission ~= nil and g_currentMission.wailaPaths or nil
-    local splines = 0
-    if store ~= nil and store.getAll ~= nil then
-        map.pathLines = map.pathLines or (function()
-            local out = {}
-            for _, path in ipairs(store.getAll()) do
-                local line = {}
-                for _, p in ipairs(path.points) do
-                    if (p[1] - map.x) ^ 2 + (p[2] - map.z) ^ 2 <= (map.radius * 1.1) ^ 2 then
-                        line[#line + 1] = { p[1], p[2] }
-                    end
-                end
-                if #line >= 2 then
-                    out[#out + 1] = line
-                end
+    local cx, cz = atlas.cx, atlas.cz
+    local limit2 = (atlas.radius * RoadFollow.MAP_DRAW_SHARE) ^ 2
+    -- the circle that is read (made again only when the centre has moved: every PROBE_EVERY metres)
+    if map.ringAt ~= atlas.probes or map.ringSweeps ~= atlas.sweeps or map.ringRadius ~= atlas.radius then
+        map.ringAt, map.ringSweeps, map.ringRadius = atlas.probes, atlas.sweeps, atlas.radius
+        map.ring = mapCircle(cx, cz, atlas.radius, math.max(24, math.floor(atlas.radius * 1.2)))
+    end
+    mapLine(map.ring, { 1.0, 0.72, 0.85 })
+    local roads, trails, splineCount, covered = 0, 0, 0, 0
+    local leftHand = g_currentMission ~= nil and g_currentMission.aiSystem ~= nil and g_currentMission.aiSystem.isLeftHandTraffic == true
+    local mineColor, oncomingColor, acrossColor = { 1.0, 1.0, 1.0 }, { 0.55, 0.75, 1.0 }, { 0.8, 0.8, 0.8 }
+    -- the game's own lanes, where the road has them: the lane that runs the way you move white, the oncoming one light blue, across your way grey
+    refreshSplines(map, atlas)
+    for _, spline in ipairs(map.splines) do
+        local color = acrossColor
+        if atlas.dirX ~= nil then
+            local dot = spline.dx * atlas.dirX + spline.dz * atlas.dirZ
+            if dot > 0.7 then
+                color = mineColor
+            elseif dot < -0.7 then
+                color = oncomingColor
             end
-            return out
-        end)()
-        for _, line in ipairs(map.pathLines) do
-            mapLine(line, { 0.35, 0.5, 1.0 })
-            splines = splines + 1
         end
+        for _, run in ipairs(spline.runs) do
+            mapLine(run, color, cx, cz, limit2)
+        end
+        splineCount = splineCount + 1
     end
-    local roads, trails, covered = 0, 0, 0
-    for i, trace in ipairs(m.traces) do
-        if map.onSpline ~= nil and map.onSpline[i] then
+    -- our own lines, where there is no spline: the two lanes of a wide road (the lane that runs the way you move white, the oncoming one light blue, across your
+    -- way grey), one line for a narrow road or a track
+    for _, piece in ipairs(atlas.pieces) do
+        local line = RoadAtlas.lineOf(piece)
+        if pieceOnSpline(map, piece, line) then
             covered = covered + 1
-        elseif trace.kind == "road" then
-            mapLine(trace.points, { 1.0, 1.0, 1.0 })
+        elseif piece.lanes ~= nil then
+            local along = RoadAtlas.alongWay(piece, atlas)       -- +1: the piece runs the way you move, -1: against it, nil: across / unknown
+            local rightIsMine = (along ~= nil and along > 0) ~= leftHand
+            local right, left = mineColor, oncomingColor
+            if along == nil then
+                right, left = acrossColor, acrossColor
+            elseif not rightIsMine then
+                right, left = oncomingColor, mineColor
+            end
+            mapLine(piece.lanes.right, right, cx, cz, limit2)
+            mapLine(piece.lanes.left, left, cx, cz, limit2)
+            roads = roads + 1
+        elseif piece.kind == "road" then
+            mapLine(line, { 1.0, 1.0, 1.0 }, cx, cz, limit2)
             roads = roads + 1
         else
-            mapLine(trace.points, { 1.0, 0.65, 0.1 })
+            mapLine(line, { 1.0, 0.65, 0.1 }, cx, cz, limit2)
             trails = trails + 1
         end
     end
-    for _, j in ipairs(m.junctions) do
+    for _, j in ipairs(atlas.junctions) do
         mapPost(j[1], j[2], 5, { 0.1, 1.0, 0.2 })
-        local ring = {}
-        for k = 0, 12 do
-            local a = 2 * math.pi * k / 12
-            ring[#ring + 1] = { j[1] + 3 * math.cos(a), j[2] + 3 * math.sin(a) }
-        end
-        mapLine(ring, { 0.1, 1.0, 0.2 })
+        mapLine(mapCircle(j[1], j[2], 3, 12), { 0.1, 1.0, 0.2 })
     end
-    for _, d in ipairs(m.deadEnds) do
+    for _, d in ipairs(atlas.deadEnds) do
         mapPost(d[1], d[2], 2.5, { 1.0, 0.15, 0.1 })
     end
     -- the legend
     setTextAlignment(RenderText.ALIGN_LEFT)
     local lines = {
-        { { 1, 0.9, 0.2 }, string.format("Road map, %d m round %.0f %.0f  (%s, %d map reads)", map.radius, map.x, map.z, m.done and "done" or "mapping...", m.samples) },
-        { { 0.35, 0.5, 1.0 }, string.format("blue: stored paths / map splines (%d)", splines) },
-        { { 1, 1, 1 }, string.format("white: road in the map picture (%d)", roads) },
-        { { 1.0, 0.65, 0.1 }, string.format("orange: gravel / worn track (%d)", trails) },
-        { { 0.1, 1.0, 0.2 }, string.format("green: junctions (%d)    red: dead ends (%d)    (%d lines lie on a spline)", #m.junctions, #m.deadEnds, covered) },
-        { { 1.0, 0.72, 0.85 }, "pink: the rings swept   (roadFollowMap off clears it)" },
+        { { 1, 0.9, 0.2 }, string.format("Road map: %d m round you (6 s of road at your speed, at least %d m), following you   %.0f map reads/s, %.1f ms/s of work, %d jobs queued", atlas.radius, atlas.baseRadius, map.readsPerSecond or 0, map.workMs or 0,
+            #atlas.queue - atlas.head + 1) },
+        { { 1, 1, 1 }, string.format("white: your lane   light blue: the oncoming lane   grey: across your way   (the game's lane splines %d, our own lines %d, %d pieces on a spline)", splineCount, roads, covered) },
+        { { 1.0, 0.65, 0.1 }, string.format("orange: gravel / worn track, one line (%d)", trails) },
+        { { 0.1, 1.0, 0.2 }, string.format("green: junctions (%d)    red: dead ends (%d)", #atlas.junctions, #atlas.deadEnds) },
+        { { 1.0, 0.72, 0.85 }, "pink: the circle that is read   (roadFollowMap again switches it off)" },
     }
     for i, entry in ipairs(lines) do
         setTextColor(entry[1][1], entry[1][2], entry[1][3], 1)
@@ -2687,13 +3204,27 @@ function RoadFollow.drawRoadMap()
 end
 
 function RoadFollow.consoleMap(_, argument)
-    if argument == "off" or (argument == nil and RoadFollow.roadMap ~= nil) then
-        RoadFollow.roadMap = nil
+    local map = RoadFollow.roadMap
+    if argument == "off" or (argument == nil and map ~= nil and map.show) then
+        if RoadFollow.JUNCTION_HUD and map ~= nil then
+            map.show = false                 -- (the atlas goes on for the junction picture)
+        else
+            RoadFollow.roadMap = nil
+        end
         return "Road Follow road map: off"
     end
     local ok, text = RoadFollow.startRoadMap(argument)
     return "Road Follow road map: " .. text
 end
+
+function RoadFollow.consoleJunctions()
+    RoadFollow.JUNCTION_HUD = not RoadFollow.JUNCTION_HUD
+    if not RoadFollow.JUNCTION_HUD and RoadFollow.roadMap ~= nil and not RoadFollow.roadMap.show then
+        RoadFollow.roadMap = nil
+    end
+    return "Road Follow junction picture (the next T / Y / + ahead, above the gauge): " .. (RoadFollow.JUNCTION_HUD and "ON" or "OFF")
+end
+addConsoleCommand("roadFollowJunctions", "Switch the picture of the next junction ahead on / off", "consoleJunctions", RoadFollow)
 function RoadFollow.consoleField()
     RoadFollow.FIELD_MODE = not RoadFollow.FIELD_MODE
     return "Road Follow field mode (a course through open ground, round obstacles): " .. (RoadFollow.FIELD_MODE and "ON" or "OFF")
@@ -2711,7 +3242,8 @@ function RoadFollow.registerWailaTab()
     wailaTabRegistered = true
     local entries = {
         { label = "Show the scan lines for 10 s (sit in a vehicle, close this menu)", run = function() RoadFollow.debugSecondsLeft = 10 end },
-        { label = "Map the roads round me as debug lines for 2 minutes (roadFollowMap)", run = function() RoadFollow.consoleMap(nil, nil) end },
+        { label = "Map the roads round me as debug lines, following me, until switched off (roadFollowMap)", run = function() RoadFollow.consoleMap(nil, nil) end },
+        { label = "Picture of the next junction ahead on / off (roadFollowJunctions)", run = function() RoadFollow.consoleJunctions() end },
         { label = "Scan lines on / off until switched (same as the console command roadFollowDebug)", run = function() RoadFollow.consoleToggleDebug() end },
         { label = "Write the map picture around the vehicle to the log (roadFollowDump)", run = function() RoadFollow.consoleDump() end },
         { label = "Write the black box (the last 8 s of the assist) to the log", run = function() RoadFollow.consoleBlackbox() end },
@@ -2917,7 +3449,7 @@ function RoadFollow:onRegisterActionEvents(isActiveForInput, isActiveForInputIgn
         if self:getIsActiveForInput(true, true) then
             local _, eventId = self:addActionEvent(spec.actionEvents, InputAction.ROADFOLLOW_TOGGLE, self, RoadFollow.actionEventToggle, false, true, false, true, nil, nil, true, true)
             g_inputBinding:setActionEventTextPriority(eventId, GS_PRIO_NORMAL)
-            -- the number block as the assist's controls (the keys there are different keys from the number row)
+            -- the signal keys (Right Ctrl + left / right) and the set speed keys (the number block)
             local controls = {
                 { InputAction.ROADFOLLOW_SIGNAL_LEFT, "left" },
                 { InputAction.ROADFOLLOW_SIGNAL_RIGHT, "right" },
@@ -2927,12 +3459,42 @@ function RoadFollow:onRegisterActionEvents(isActiveForInput, isActiveForInputIgn
             for _, control in ipairs(controls) do
                 if control[1] ~= nil then
                     local _, controlId = self:addActionEvent(spec.actionEvents, control[1], self, RoadFollow.actionEventControl, false, true, false, true, control[2], nil, true, true)
-                    g_inputBinding:setActionEventTextPriority(controlId, GS_PRIO_LOW)
-                    g_inputBinding:setActionEventTextVisibility(controlId, false)
+                    -- the signal keys are in the key help (top left) with the key they really have; the speed keys stay out of it (the wheel does that)
+                    local isSignal = control[2] == "left" or control[2] == "right"
+                    g_inputBinding:setActionEventTextPriority(controlId, isSignal and GS_PRIO_NORMAL or GS_PRIO_LOW)
+                    g_inputBinding:setActionEventTextVisibility(controlId, isSignal)
+                    if isSignal then
+                        g_inputBinding:setActionEventText(controlId, g_i18n:getText(control[2] == "left" and "input_ROADFOLLOW_SIGNAL_LEFT" or "input_ROADFOLLOW_SIGNAL_RIGHT"))
+                    end
                 end
             end
+            RoadFollow.logBindings()
             RoadFollow.updateActionEvents(self)
         end
+    end
+end
+
+-- Once per session: which keys the game really gave the actions (a binding the player saved earlier beats the mod's default), so a key that does nothing can be
+-- told from a key that is not the one expected.
+function RoadFollow.logBindings()
+    if RoadFollow.bindingsLogged then
+        return
+    end
+    RoadFollow.bindingsLogged = true
+    for _, name in ipairs({ "ROADFOLLOW_TOGGLE", "ROADFOLLOW_SIGNAL_LEFT", "ROADFOLLOW_SIGNAL_RIGHT", "ROADFOLLOW_SPEED_UP", "ROADFOLLOW_SPEED_DOWN" }) do
+        -- the game's own bindings: g_inputBinding:getActionByName(name):getActiveBindings(), each with the names of its keys (axisNames: "KEY_rctrl", "KEY_left")
+        local ok, text = pcall(function()
+            local action = g_inputBinding:getActionByName(name)
+            if action == nil then
+                return "no such action"
+            end
+            local parts = {}
+            for _, binding in ipairs(action:getActiveBindings() or {}) do
+                parts[#parts + 1] = table.concat(binding.axisNames or {}, " + ")
+            end
+            return #parts > 0 and table.concat(parts, "  /  ") or "no key"
+        end)
+        log("keys: %s = %s", name, ok and tostring(text) or ("? (" .. tostring(text) .. ")"))
     end
 end
 
@@ -2942,9 +3504,9 @@ function RoadFollow:actionEventControl(actionName, inputValue, callbackState, is
     if type(callbackState) == "number" then
         handled = RoadFollow.adjustSpeed(self, callbackState)
     else
-        handled = RoadFollow.signal(self, callbackState)
+        handled = RoadFollow.signalKey(self, callbackState)
     end
-    log("key %s: %s", tostring(actionName), handled and "used" or "ignored (assist not driving)")
+    log("key %s: %s", tostring(actionName), handled and "used" or "ignored")
 end
 
 function RoadFollow:updateActionEvents()

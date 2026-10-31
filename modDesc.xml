@@ -36,16 +36,16 @@
             <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_r" index="1" />
         </actionBinding>
         <actionBinding action="ROADFOLLOW_SIGNAL_LEFT">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_4" index="1" />
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_left" index="1" />
         </actionBinding>
         <actionBinding action="ROADFOLLOW_SIGNAL_RIGHT">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_6" index="1" />
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_right" index="1" />
         </actionBinding>
         <actionBinding action="ROADFOLLOW_SPEED_UP">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_8" index="1" />
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_up" index="1" />
         </actionBinding>
         <actionBinding action="ROADFOLLOW_SPEED_DOWN">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_2" index="1" />
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_down" index="1" />
         </actionBinding>
     </inputBinding>
 
@@ -54,10 +54,10 @@
             <en>Road follow</en>
         </text>
         <text name="input_ROADFOLLOW_SIGNAL_LEFT">
-            <en>Road assist: signal left</en>
+            <en>Turn signal left</en>
         </text>
         <text name="input_ROADFOLLOW_SIGNAL_RIGHT">
-            <en>Road assist: signal right</en>
+            <en>Turn signal right</en>
         </text>
         <text name="input_ROADFOLLOW_SPEED_UP">
             <en>Road assist: faster</en>

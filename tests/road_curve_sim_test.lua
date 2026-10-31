@@ -1,6 +1,7 @@
 -- Closed loop: how closely the assist follows bends, from stored paths (exact lines) and from map pictures (2 m pixels).
 local S = dofile("tests/sim_harness.lua")
 local store = S.store
+RoadFollow.BEND_LOG = false          -- (the bend log is always on in the game; here only the test of it switches it on, so the other tests stay quiet)
 
 local function trueDistance(poly, x, z)
     local best = math.huge
@@ -186,5 +187,46 @@ do
         if veh.pos[2] > radius + 100 then return false end
     end, { understeer = 0 })
     check(string.format("... a vehicle that does not understeer is left alone (largest gain %.2f)", maxGain), maxGain < 1.06)
+end
+
+-- the bend log: every bend the assist drives is logged (no debug lines needed), a line every half second and a summary at the end
+do
+    store.clear()
+    local radius, kmh = 60, 40
+    local poly = arcPoly(radius)
+    store.add({ points = poly, kind = "spline", source = "map", width = 7 })
+    local v = S.newVehicle(0, 0, kmh)
+    v.spec_drivable.cruiseControl.speed = kmh
+    local lines, realPrint = {}, print
+    RoadFollow.BEND_LOG = true
+    print = function(...) lines[#lines + 1] = table.concat({ ... }, " ") end
+    RoadFollow.debugDraw = false
+    S.simulate(v, 60, function(veh)
+        if veh.pos[2] > radius + 100 then return false end
+    end, { understeer = 0.3 })
+    print = realPrint
+    local starts, ticks, ends, summary = 0, 0, 0, nil
+    for _, l in ipairs(lines) do
+        if l:find("bend start", 1, true) then starts = starts + 1 end
+        if l:find("] bend: ", 1, true) then ticks = ticks + 1 end
+        if l:find("bend end", 1, true) then ends = ends + 1; summary = l end
+    end
+    check(string.format("a 60 m bend, debug lines off: the bend is logged (start %d, %d lines, end %d)", starts, ticks, ends), starts == 1 and ticks >= 3 and ends == 1)
+    check("... the summary says the speeds, the furthest outside / inside, the capped time, the understeer gain",
+        summary ~= nil and summary:find("OUTSIDE", 1, true) ~= nil and summary:find("INSIDE", 1, true) ~= nil and summary:find("steering capped", 1, true) ~= nil and summary:find("understeer gain", 1, true) ~= nil)
+    local sample
+    for _, l in ipairs(lines) do if l:find("] bend: ", 1, true) then sample = l break end end
+    check("... and each line has the command, the wheel, the error and which side of the line it is on", sample ~= nil and sample:find("cmd", 1, true) and sample:find("wheel", 1, true) and (sample:find("(outside)", 1, true) or sample:find("(inside)", 1, true)))
+    RoadFollow.BEND_LOG = false
+    lines = {}
+    print = function(...) lines[#lines + 1] = table.concat({ ... }, " ") end
+    local v2 = S.newVehicle(0, 0, kmh)
+    v2.spec_drivable.cruiseControl.speed = kmh
+    S.simulate(v2, 20, function(veh) if veh.pos[2] > radius + 100 then return false end end, { understeer = 0.3 })
+    print = realPrint
+    local any = false
+    for _, l in ipairs(lines) do if l:find("] bend start", 1, true) or l:find("] bend: ", 1, true) or l:find("] bend end", 1, true) then any = true end end
+    check("switched off (RoadFollow.BEND_LOG = false): nothing logged", not any)
+    RoadFollow.BEND_LOG = false
 end
 finish("road_curve_sim_test")

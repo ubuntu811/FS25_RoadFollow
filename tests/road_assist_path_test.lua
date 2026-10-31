@@ -581,4 +581,44 @@ do
     classAt = savedClass
 end
 
+-- the signal keys (Right Ctrl + left / right): the turn signal whatever the vehicle is doing
+do
+    local s = newVehicle(0, 0)
+    s.speed = 0                                   -- standing still
+    s.spec_drivable.cruiseControl.state = 0       -- cruise control off
+    check("standing still, cruise off, no assist: the left key switches the left light on", RoadFollow.signalKey(s, "left") == true and s.turnState == Lights.TURNLIGHT_LEFT)
+    check("... the same key again puts it out", RoadFollow.signalKey(s, "left") == true and s.turnState == Lights.TURNLIGHT_OFF)
+    RoadFollow.signalKey(s, "left")
+    RoadFollow.signalKey(s, "right")
+    check("... the other key switches it (right after left)", s.turnState == Lights.TURNLIGHT_RIGHT)
+    assistOf(s).hazard = true
+    RoadFollow.signalKey(s, "left")
+    check("a hazard the assist had set is taken over by the key", assistOf(s).hazard == false and s.turnState == Lights.TURNLIGHT_LEFT)
+    check("the assist reads that light as its signal (it is the vehicle's own light)", RoadFollow.getIntent(s) == "left")
+    check("no vehicle: nothing, no error", RoadFollow.signalKey(nil, "left") == false)
+    local noLights = newVehicle(0, 0)
+    noLights.setTurnLightState, noLights.getTurnLightState = nil, nil
+    check("a vehicle without turn lights: no error", pcall(RoadFollow.signalKey, noLights, "left"))
+    -- with the assist driving it is the assist's signal as well
+    haveBitmapData = false
+    crossingPaths()
+    local d = newVehicle(-25, 0)
+    d.speed = 40
+    d.spec_drivable.cruiseControl.speed = 40
+    run(d, 700)
+    check("with the assist driving: the key sets its signal and the light", assistOf(d).engaged and RoadFollow.signalKey(d, "left") == true and assistOf(d).intent == "left" and d.turnState == Lights.TURNLIGHT_LEFT)
+    -- the steering axis is not looked at while Ctrl is held (the keys are steering keys too)
+    Input = { KEY_rctrl = 1, KEY_lctrl = 2, isKeyPressed = function(key) return key == 1 end }
+    check("a Ctrl key held: RoadFollow.ctrlHeld", RoadFollow.ctrlHeld() == true)
+    local steeringBefore = #driveCalls
+    run(d, 160, { 0, 0.8 })
+    check("steering axis pushed while Ctrl is held (the signal key): the assist keeps driving, no hand-over", assistOf(d).engaged == true and #driveCalls > 0)
+    Input = { KEY_rctrl = 1, KEY_lctrl = 2, isKeyPressed = function() return false end }
+    check("no Ctrl held: false", RoadFollow.ctrlHeld() == false)
+    run(d, 80, { 0, 0.8 })
+    check("the same axis without Ctrl: the player steering, the assist hands over (taps are off by default)", assistOf(d).engaged == false)
+    Input = nil
+    check("no Input table (offline): false, no error", RoadFollow.ctrlHeld() == false)
+end
+
 finish("road_assist_path_test")

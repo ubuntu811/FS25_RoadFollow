@@ -98,6 +98,8 @@ check("after the grace period the assist is back", #driveCalls > 0)
 
 -- a tap on a steering key is the turn signal, and the assist keeps driving
 local tapAssist = v["spec_FS25_RoadFollow.roadFollow"].assist
+check("(taps as the turn signal are off by default: the signal keys are the signal)", RoadFollow.TAP_SIGNALS == false)
+RoadFollow.TAP_SIGNALS = true      -- the tap feature stays, behind the switch: tested here
 run(v, 400)
 check("(driving again before the tap tests)", tapAssist.engaged == true)
 run(v, 80, { 0, 0.6 })
