@@ -391,6 +391,19 @@ function RoadFollow.noteTerrainRect(minX, minZ, maxX, maxZ)
     RoadFollow.clearForestFloorCache()
 end
 
+-- Utils.appendedFunction runs both functions and returns NOTHING (the game's own: `oldFunc(...); newFunc(...)`): wrapped round a constructor it makes the constructor return nil. LandscapingSculptEvent.new
+-- did, and the construction screen then called sendEvent(nil): "attempt to index nil with 'run'" every frame. This appends and gives back what the original returned (the game's functions here return one or two values).
+local function appendKeepingResults(old, new)
+    if old == nil then
+        return new
+    end
+    return function(...)
+        local a, b, c, d = old(...)
+        new(...)
+        return a, b, c, d
+    end
+end
+
 function RoadFollow.hookLandscaping()
     if RoadFollow.landscapingHooked or Utils == nil then
         return
@@ -398,7 +411,7 @@ function RoadFollow.hookLandscaping()
     local hooked = false
     if LandscapingSculptEvent ~= nil and LandscapingSculptEvent.new ~= nil then
         hooked = true
-        LandscapingSculptEvent.new = Utils.appendedFunction(LandscapingSculptEvent.new, function(validateOnly, operation, x, y, z, nx, ny, nz, d, minY, maxY, radius)
+        LandscapingSculptEvent.new = appendKeepingResults(LandscapingSculptEvent.new, function(validateOnly, operation, x, y, z, nx, ny, nz, d, minY, maxY, radius)
             if validateOnly ~= true then
                 pcall(RoadFollow.noteTerrainEdit, x, z, radius)
             end
@@ -408,7 +421,7 @@ function RoadFollow.hookLandscaping()
     if TD ~= nil and TD.apply ~= nil then
         hooked = true
         if TD.addSoftSquareBrush ~= nil then
-            TD.addSoftSquareBrush = Utils.appendedFunction(TD.addSoftSquareBrush, function(self, x, z, size)
+            TD.addSoftSquareBrush = appendKeepingResults(TD.addSoftSquareBrush, function(self, x, z, size)
                 if x ~= nil and z ~= nil then
                     local h = (size or 4) / 2
                     noteBounds(self, x - h, z - h, x + h, z + h)
@@ -416,7 +429,7 @@ function RoadFollow.hookLandscaping()
             end)
         end
         if TD.addSoftCircleBrush ~= nil then
-            TD.addSoftCircleBrush = Utils.appendedFunction(TD.addSoftCircleBrush, function(self, x, z, radius)
+            TD.addSoftCircleBrush = appendKeepingResults(TD.addSoftCircleBrush, function(self, x, z, radius)
                 if x ~= nil and z ~= nil then
                     local r = radius or 4
                     noteBounds(self, x - r, z - r, x + r, z + r)
@@ -424,7 +437,7 @@ function RoadFollow.hookLandscaping()
             end)
         end
         if TD.addArea ~= nil then
-            TD.addArea = Utils.appendedFunction(TD.addArea, function(self, x, y, z, s1x, s1y, s1z, s2x, s2y, s2z)
+            TD.addArea = appendKeepingResults(TD.addArea, function(self, x, y, z, s1x, s1y, s1z, s2x, s2y, s2z)
                 if x ~= nil and z ~= nil and s1x ~= nil and s2x ~= nil then
                     local xs, zs = { x, x + s1x, x + s2x, x + s1x + s2x }, { z, z + s1z, z + s2z, z + s1z + s2z }
                     noteBounds(self, math.min(xs[1], xs[2], xs[3], xs[4]), math.min(zs[1], zs[2], zs[3], zs[4]), math.max(xs[1], xs[2], xs[3], xs[4]), math.max(zs[1], zs[2], zs[3], zs[4]))
@@ -432,7 +445,7 @@ function RoadFollow.hookLandscaping()
             end)
         end
         if TD.addPolygonalArea ~= nil then
-            TD.addPolygonalArea = Utils.appendedFunction(TD.addPolygonalArea, function(self, vertexPositions)
+            TD.addPolygonalArea = appendKeepingResults(TD.addPolygonalArea, function(self, vertexPositions)
                 -- the vertices as a flat list x, z, x, z ... or a list of { x, z }
                 if type(vertexPositions) == "table" then
                     local minX, minZ, maxX, maxZ = math.huge, math.huge, -math.huge, -math.huge
@@ -457,9 +470,9 @@ function RoadFollow.hookLandscaping()
             end)
         end
         if TD.clearAreas ~= nil then
-            TD.clearAreas = Utils.appendedFunction(TD.clearAreas, function(self) self.rfBounds = nil end)
+            TD.clearAreas = appendKeepingResults(TD.clearAreas, function(self) self.rfBounds = nil end)
         end
-        TD.apply = Utils.appendedFunction(TD.apply, function(self, previewOnly)
+        TD.apply = appendKeepingResults(TD.apply, function(self, previewOnly)
             local b = self.rfBounds
             if previewOnly ~= true and b ~= nil then
                 pcall(RoadFollow.noteTerrainRect, b[1], b[2], b[3], b[4])
@@ -468,7 +481,7 @@ function RoadFollow.hookLandscaping()
     end
     if TerrainDeformationQueue ~= nil and TerrainDeformationQueue.onJobComplete ~= nil then
         hooked = true
-        TerrainDeformationQueue.onJobComplete = Utils.appendedFunction(TerrainDeformationQueue.onJobComplete, function()
+        TerrainDeformationQueue.onJobComplete = appendKeepingResults(TerrainDeformationQueue.onJobComplete, function()
             -- the paint has landed: the quiet period starts again from now (a job that was a preview, or not ours to know of, changes nothing)
             if RoadFollow.pendingEdit ~= nil then
                 RoadFollow.mapStale = true

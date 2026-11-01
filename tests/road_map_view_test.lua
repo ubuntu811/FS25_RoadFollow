@@ -303,7 +303,8 @@ do
     check("... when it has closed (and it is quiet), the map starts again", map.atlas ~= keptAtlas and RoadFollow.mapStale == false)
 
     -- the hook on the game's landscaping event
-    Utils = { appendedFunction = function(old, new) return function(...) local r = old(...); new(...); return r end end }
+    -- the game's own Utils.appendedFunction: runs both and returns NOTHING (a stub that passed the old result on hid the bug that broke the construction screen)
+    Utils = { appendedFunction = function(old, new) return function(...) old(...); new(...) end end }
     local created = 0
     LandscapingSculptEvent = { new = function(...) created = created + 1; return { made = true } end }
     RoadFollow.landscapingHooked = false
@@ -311,7 +312,7 @@ do
     RoadFollow.hookLandscaping()
     local count = RoadFollow.editedCellCount()
     local event = LandscapingSculptEvent.new(false, 1, 400, 0, 300, nil, nil, nil, nil, nil, nil, 4)
-    check("LandscapingSculptEvent.new still makes the event (the hook is only appended, and only once)", event ~= nil and event.made == true and created == 1)
+    check("LandscapingSculptEvent.new still RETURNS the event it makes (the game's appendedFunction would return nothing: the construction screen sent nil), and the hook is on it once", event ~= nil and event.made == true and created == 1)
     check("... and tells the road follower where (a real edit)", RoadFollow.editedCellCount() > count and RoadFollow.mapStale == true)
     count = RoadFollow.editedCellCount()
     LandscapingSculptEvent.new(true, 1, 900, 0, 900, nil, nil, nil, nil, nil, nil, 4)
