@@ -150,11 +150,25 @@ v.speed = 2
 run(v, 600)
 check("below 5 km/h: no assist", #driveCalls == 0)
 
--- reversing
+-- reversing: backwards for a while (REVERSE_HOLD_MS) and at more than a crawl: the assist is off; a flicker of "backwards" (a heavy vehicle rocking) or backwards at a standstill is not reversing
 v = newVehicle(0, 0)
 v.movingDirection = -1
-run(v, 600)
-check("reversing: no assist", #driveCalls == 0)
+run(v, 1200)
+check("reversing for good: the assist is not engaged", v["spec_FS25_RoadFollow.roadFollow"].assist.engaged ~= true)
+v = newVehicle(0, 0)
+run(v, 500)
+local engagedBefore = v["spec_FS25_RoadFollow.roadFollow"].assist.engaged == true
+v.movingDirection = -1
+run(v, 48)
+v.movingDirection = 1
+run(v, 300)
+check("a flicker of backwards (three frames) does not hand the vehicle back", engagedBefore and v["spec_FS25_RoadFollow.roadFollow"].assist.engaged == true)
+v = newVehicle(0, 0)
+run(v, 500)
+v.speed = 0.8
+v.movingDirection = -1
+run(v, 900)
+check("backwards at a crawl (under REVERSE_MIN_KMH) is no reversing: the reason is not 'reversing'", (v["spec_FS25_RoadFollow.roadFollow"].assist.reverseMs or 0) == 0)
 
 -- off the road
 v = newVehicle(0, 30)

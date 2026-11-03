@@ -87,6 +87,8 @@ RoadFollow.CAPTURE_SECONDS = 3.0           -- ... as far ahead as this many seco
 RoadFollow.BLEND_MIN = 25                  -- the join eases onto the road over 3 s of travel, 25 to 60 m
 RoadFollow.BLEND_MAX = 60
 RoadFollow.WHEEL_STEP_KMH = 5              -- the mouse wheel changes the cruise speed by this much per notch while the assist drives (0 = off)
+RoadFollow.REVERSE_MIN_KMH = 2            -- the vehicle counts as reversing when the game says backwards at least this fast ...
+RoadFollow.REVERSE_HOLD_MS = 500           -- ... for this long
 RoadFollow.MOUSE_SIGNALS = false            -- left / right mouse button = turn signal while the assist drives (off: the vehicle's own turn lights, the game's indicator keys, are the signal)
 RoadFollow.INTENT_TIMEOUT_MS = 30000       -- a signal that was never used is dropped after this long
 RoadFollow.INTENT_DONE_DEG = 50            -- a turn is done when the heading has changed this much towards the signal
@@ -1578,6 +1580,14 @@ function RoadFollow.assistTick(self, spec, axisForward, axisSide, doHandbrake, d
         return false
     end
 
+    -- reversing: the game says the vehicle moves backwards, for a while and not at a standstill. A heavy sprayer that has braked for a junction or starts from rest on a slope rocks and reports "backwards" for a
+    -- frame or two (the log: the assist went off with "reversing" over and over while the vehicle crept FORWARD 1 to 8 m between the restarts)
+    if (self.movingDirection or 1) < 0 and speedKmh >= RoadFollow.REVERSE_MIN_KMH then
+        assist.reverseMs = (assist.reverseMs or 0) + dt
+    else
+        assist.reverseMs = 0
+    end
+
     local reason = nil
     if not isCruiseOn(self) then
         reason = "cruise control off"
@@ -1587,7 +1597,7 @@ function RoadFollow.assistTick(self, spec, axisForward, axisSide, doHandbrake, d
         reason = "pedal"
     elseif assist.steerGraceMs > 0 then
         reason = "player steering"
-    elseif (self.movingDirection or 1) < 0 then
+    elseif (assist.reverseMs or 0) >= RoadFollow.REVERSE_HOLD_MS then
         reason = "reversing"
     elseif speedKmh < (assist.engaged and RoadFollow.ASSIST_STAY_SPEED_KMH or RoadFollow.ASSIST_MIN_SPEED_KMH)
         and not (assist.engaged and (assist.holdMs or 0) > 0) then
