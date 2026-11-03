@@ -3264,6 +3264,7 @@ function RoadFollow.registerWailaTab()
     g_currentMission.waila.registerDebugTab({
         id = "roadfollow",
         label = "Road Follow",
+        icon = Utils.getFilename("hud/tab-road.dds", RoadHud.modDirectory),                 -- (a road running away, white lines like the hub's other tabs)
         getItems = function() return entries end,
         describeItem = function(item) return item.label, nil end,
         buttons = { { label = "Run", callback = function(item) item.run() end } },
