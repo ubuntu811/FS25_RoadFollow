@@ -26,20 +26,12 @@
 
     <actions>
         <action name="ROADFOLLOW_TOGGLE" category="VEHICLE" />
-        <action name="ROADFOLLOW_SIGNAL_LEFT" category="VEHICLE" />
-        <action name="ROADFOLLOW_SIGNAL_RIGHT" category="VEHICLE" />
         <action name="ROADFOLLOW_SPEED_UP" category="VEHICLE" />
         <action name="ROADFOLLOW_SPEED_DOWN" category="VEHICLE" />
     </actions>
     <inputBinding>
         <actionBinding action="ROADFOLLOW_TOGGLE">
             <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_r" index="1" />
-        </actionBinding>
-        <actionBinding action="ROADFOLLOW_SIGNAL_LEFT">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_left" index="1" />
-        </actionBinding>
-        <actionBinding action="ROADFOLLOW_SIGNAL_RIGHT">
-            <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_right" index="1" />
         </actionBinding>
         <actionBinding action="ROADFOLLOW_SPEED_UP">
             <binding device="KB_MOUSE_DEFAULT" input="KEY_rctrl KEY_up" index="1" />
@@ -52,12 +44,6 @@
     <l10n>
         <text name="input_ROADFOLLOW_TOGGLE">
             <en>Road follow</en>
-        </text>
-        <text name="input_ROADFOLLOW_SIGNAL_LEFT">
-            <en>Turn signal left</en>
-        </text>
-        <text name="input_ROADFOLLOW_SIGNAL_RIGHT">
-            <en>Turn signal right</en>
         </text>
         <text name="input_ROADFOLLOW_SPEED_UP">
             <en>Road assist: faster</en>

@@ -87,7 +87,7 @@ RoadFollow.CAPTURE_SECONDS = 3.0           -- ... as far ahead as this many seco
 RoadFollow.BLEND_MIN = 25                  -- the join eases onto the road over 3 s of travel, 25 to 60 m
 RoadFollow.BLEND_MAX = 60
 RoadFollow.WHEEL_STEP_KMH = 5              -- the mouse wheel changes the cruise speed by this much per notch while the assist drives (0 = off)
-RoadFollow.MOUSE_SIGNALS = false            -- left / right mouse button = turn signal while the assist drives (off: the signal keys are the signal, see RoadFollow.signalKey)
+RoadFollow.MOUSE_SIGNALS = false            -- left / right mouse button = turn signal while the assist drives (off: the vehicle's own turn lights, the game's indicator keys, are the signal)
 RoadFollow.INTENT_TIMEOUT_MS = 30000       -- a signal that was never used is dropped after this long
 RoadFollow.INTENT_DONE_DEG = 50            -- a turn is done when the heading has changed this much towards the signal
 RoadFollow.DETECT_VEHICLES = true          -- rays along the line for traffic and other vehicles ahead (RoadLead.lua); the base game's handler does not see traffic cars
@@ -1260,24 +1260,6 @@ function RoadFollow.signal(vehicle, side)
     assist.intentTurnDeg = nil
     setTurnLights(vehicle, assist.intent)
     log("signal: %s", tostring(assist.intent or "off"))
-    return true
-end
-
--- The signal keys (Right Ctrl + left / right): the turn signal, whatever the vehicle is doing: standing still, cruise control off, the assist not driving.
--- The same side again puts it out, the other side switches it. With the assist driving it is also the assist's signal for the next junction; without,
--- it is the vehicle's own turn light (which the assist reads as the signal as soon as it drives). Returns true when something was set.
-function RoadFollow.signalKey(vehicle, side)
-    if vehicle == nil then
-        return false
-    end
-    local spec = getSpec(vehicle)
-    if spec ~= nil and spec.assist ~= nil and spec.assist.engaged then
-        return RoadFollow.signal(vehicle, side)
-    end
-    if spec ~= nil and spec.assist ~= nil and spec.assist.hazard then
-        spec.assist.hazard = false              -- (a hazard the assist set at a stop: a signal key is the player taking the lights back)
-    end
-    RoadFollow.signalLights(vehicle, side)
     return true
 end
 
@@ -3463,23 +3445,16 @@ function RoadFollow:onRegisterActionEvents(isActiveForInput, isActiveForInputIgn
         if self:getIsActiveForInput(true, true) then
             local _, eventId = self:addActionEvent(spec.actionEvents, InputAction.ROADFOLLOW_TOGGLE, self, RoadFollow.actionEventToggle, false, true, false, true, nil, nil, true, true)
             g_inputBinding:setActionEventTextPriority(eventId, GS_PRIO_NORMAL)
-            -- the signal keys (Right Ctrl + left / right) and the set speed keys (the number block)
+            -- the set speed keys (Right Ctrl + up / down); the turn signal is the game's own (its indicator keys, the vehicle's turn lights are the intent)
             local controls = {
-                { InputAction.ROADFOLLOW_SIGNAL_LEFT, "left" },
-                { InputAction.ROADFOLLOW_SIGNAL_RIGHT, "right" },
                 { InputAction.ROADFOLLOW_SPEED_UP, 1 },
                 { InputAction.ROADFOLLOW_SPEED_DOWN, -1 },
             }
             for _, control in ipairs(controls) do
                 if control[1] ~= nil then
                     local _, controlId = self:addActionEvent(spec.actionEvents, control[1], self, RoadFollow.actionEventControl, false, true, false, true, control[2], nil, true, true)
-                    -- the signal keys are in the key help (top left) with the key they really have; the speed keys stay out of it (the wheel does that)
-                    local isSignal = control[2] == "left" or control[2] == "right"
-                    g_inputBinding:setActionEventTextPriority(controlId, isSignal and GS_PRIO_NORMAL or GS_PRIO_LOW)
-                    g_inputBinding:setActionEventTextVisibility(controlId, isSignal)
-                    if isSignal then
-                        g_inputBinding:setActionEventText(controlId, g_i18n:getText(control[2] == "left" and "input_ROADFOLLOW_SIGNAL_LEFT" or "input_ROADFOLLOW_SIGNAL_RIGHT"))
-                    end
+                    g_inputBinding:setActionEventTextPriority(controlId, GS_PRIO_LOW)
+                    g_inputBinding:setActionEventTextVisibility(controlId, false)           -- (out of the key help: the wheel does that)
                 end
             end
             RoadFollow.logBindings()
@@ -3495,7 +3470,7 @@ function RoadFollow.logBindings()
         return
     end
     RoadFollow.bindingsLogged = true
-    for _, name in ipairs({ "ROADFOLLOW_TOGGLE", "ROADFOLLOW_SIGNAL_LEFT", "ROADFOLLOW_SIGNAL_RIGHT", "ROADFOLLOW_SPEED_UP", "ROADFOLLOW_SPEED_DOWN" }) do
+    for _, name in ipairs({ "ROADFOLLOW_TOGGLE", "ROADFOLLOW_SPEED_UP", "ROADFOLLOW_SPEED_DOWN" }) do
         -- the game's own bindings: g_inputBinding:getActionByName(name):getActiveBindings(), each with the names of its keys (axisNames: "KEY_rctrl", "KEY_left")
         local ok, text = pcall(function()
             local action = g_inputBinding:getActionByName(name)
@@ -3514,12 +3489,7 @@ end
 
 -- Number block keys: callbackState is "left" / "right" (turn signal) or +1 / -1 (set speed)
 function RoadFollow:actionEventControl(actionName, inputValue, callbackState, isAnalog)
-    local handled
-    if type(callbackState) == "number" then
-        handled = RoadFollow.adjustSpeed(self, callbackState)
-    else
-        handled = RoadFollow.signalKey(self, callbackState)
-    end
+    local handled = RoadFollow.adjustSpeed(self, callbackState)
     log("key %s: %s", tostring(actionName), handled and "used" or "ignored")
 end
 

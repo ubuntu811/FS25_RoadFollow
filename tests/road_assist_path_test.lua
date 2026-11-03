@@ -581,24 +581,21 @@ do
     classAt = savedClass
 end
 
--- the signal keys (Right Ctrl + left / right): the turn signal whatever the vehicle is doing
+-- the vehicle's own turn lights are the signal (the game's indicator keys): the assist reads them, and the lights-only helper sets them
 do
     local s = newVehicle(0, 0)
     s.speed = 0                                   -- standing still
     s.spec_drivable.cruiseControl.state = 0       -- cruise control off
-    check("standing still, cruise off, no assist: the left key switches the left light on", RoadFollow.signalKey(s, "left") == true and s.turnState == Lights.TURNLIGHT_LEFT)
-    check("... the same key again puts it out", RoadFollow.signalKey(s, "left") == true and s.turnState == Lights.TURNLIGHT_OFF)
-    RoadFollow.signalKey(s, "left")
-    RoadFollow.signalKey(s, "right")
-    check("... the other key switches it (right after left)", s.turnState == Lights.TURNLIGHT_RIGHT)
-    assistOf(s).hazard = true
-    RoadFollow.signalKey(s, "left")
-    check("a hazard the assist had set is taken over by the key", assistOf(s).hazard == false and s.turnState == Lights.TURNLIGHT_LEFT)
+    check("standing still, no assist: the left light is switched on", RoadFollow.signalLights(s, "left") == "left" and s.turnState == Lights.TURNLIGHT_LEFT)
+    check("... the same side again puts it out", RoadFollow.signalLights(s, "left") == nil and s.turnState == Lights.TURNLIGHT_OFF)
+    RoadFollow.signalLights(s, "left")
+    RoadFollow.signalLights(s, "right")
+    check("... the other side switches it (right after left)", s.turnState == Lights.TURNLIGHT_RIGHT)
+    RoadFollow.signalLights(s, "left")
     check("the assist reads that light as its signal (it is the vehicle's own light)", RoadFollow.getIntent(s) == "left")
-    check("no vehicle: nothing, no error", RoadFollow.signalKey(nil, "left") == false)
     local noLights = newVehicle(0, 0)
     noLights.setTurnLightState, noLights.getTurnLightState = nil, nil
-    check("a vehicle without turn lights: no error", pcall(RoadFollow.signalKey, noLights, "left"))
+    check("a vehicle without turn lights: no error", pcall(RoadFollow.signalLights, noLights, "left"))
     -- with the assist driving it is the assist's signal as well
     haveBitmapData = false
     crossingPaths()
@@ -606,7 +603,7 @@ do
     d.speed = 40
     d.spec_drivable.cruiseControl.speed = 40
     run(d, 700)
-    check("with the assist driving: the key sets its signal and the light", assistOf(d).engaged and RoadFollow.signalKey(d, "left") == true and assistOf(d).intent == "left" and d.turnState == Lights.TURNLIGHT_LEFT)
+    check("with the assist driving: the signal sets its intent and the light", assistOf(d).engaged and RoadFollow.signal(d, "left") == true and assistOf(d).intent == "left" and d.turnState == Lights.TURNLIGHT_LEFT)
     -- the steering axis is not looked at while Ctrl is held (the keys are steering keys too)
     Input = { KEY_rctrl = 1, KEY_lctrl = 2, isKeyPressed = function(key) return key == 1 end }
     check("a Ctrl key held: RoadFollow.ctrlHeld", RoadFollow.ctrlHeld() == true)
