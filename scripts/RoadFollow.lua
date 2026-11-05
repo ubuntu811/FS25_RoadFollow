@@ -92,6 +92,11 @@ RoadFollow.REVERSE_HOLD_MS = 500           -- ... for this long
 RoadFollow.MOUSE_SIGNALS = false            -- left / right mouse button = turn signal while the assist drives (off: the vehicle's own turn lights, the game's indicator keys, are the signal)
 RoadFollow.INTENT_TIMEOUT_MS = 30000       -- a signal that was never used is dropped after this long
 RoadFollow.INTENT_DONE_DEG = 50            -- a turn is done when the heading has changed this much towards the signal
+RoadFollow.INTENT_STRAIGHT_M = 20          -- a signal is done when a junction it was for lies this far behind and the vehicle went straight on
+RoadFollow.INTENT_STRAIGHT_DEG = 20        -- (straight on: the heading is within this of what it was)
+RoadFollow.INTENT_PROBE_MS = 250           -- how often a signal looks for a crossing path (findNear walks a path's segments: not every frame)
+RoadFollow.INTENT_CROSS_M = 9              -- a path crossing the heading this near is a junction
+RoadFollow.INTENT_CROSS_MAX_DOT = 0.82     -- (crossing: its direction is more than about 35 degrees off the vehicle's)
 RoadFollow.DETECT_VEHICLES = true          -- rays along the line for traffic and other vehicles ahead (RoadLead.lua); the base game's handler does not see traffic cars
 RoadFollow.LEAD_INTERVAL_MS = 100
 RoadFollow.DEBUG_OPTION_REACH = 70          -- metres: the debug view reads each way at a junction at least this far out (and 6 s of driving)
@@ -1260,6 +1265,7 @@ function RoadFollow.signal(vehicle, side)
     end
     assist.intentMs = 0
     assist.intentTurnDeg = nil
+    assist.intentSeen, assist.intentTravel = false, 0
     setTurnLights(vehicle, assist.intent)
     log("signal: %s", tostring(assist.intent or "off"))
     return true
@@ -1278,10 +1284,39 @@ function RoadFollow.signalLights(vehicle, side)
     return target
 end
 
+-- Is a stored path crossing the vehicle's way right here (a side road, a crossing)? The planner only flags the junctions it has to steer for; a signal wants every one.
+local function crossingNear(self, hx, hz)
+    local store = g_currentMission ~= nil and g_currentMission.wailaPaths or nil
+    if store == nil or store.findNear == nil then
+        return false
+    end
+    local x, _, z = getWorldTranslation(self:getAIDirectionNode())
+    local length = math.sqrt(hx * hx + hz * hz)
+    if length < 1e-6 then
+        return false
+    end
+    hx, hz = hx / length, hz / length
+    for _, hit in ipairs(store.findNear(x, z, RoadFollow.INTENT_CROSS_M)) do
+        if math.abs(hit.dx * hx + hit.dz * hz) <= RoadFollow.INTENT_CROSS_MAX_DOT then
+            return true
+        end
+    end
+    return false
+end
+
 -- Called every tick while the assist drives: the signal is done once the vehicle has turned that way.
 local function updateIntent(self, assist, dt)
     if assist.intent == nil then
-        return
+        -- a light set with the game's own indicator key is a signal like a click: it ends the same ways (nothing else would ever put it out)
+        local light = turnLightIntent(self)
+        if light == nil then
+            return
+        end
+        assist.intent = light
+        local hx, _, hz = localDirectionToWorld(self:getAIDirectionNode(), 0, 0, 1)
+        assist.intentHx, assist.intentHz = hx, hz
+        assist.intentMs, assist.intentTurnDeg = 0, nil
+        assist.intentSeen, assist.intentTravel = false, 0
     end
     assist.intentMs = assist.intentMs + dt
     local hx, _, hz = localDirectionToWorld(self:getAIDirectionNode(), 0, 0, 1)
@@ -1294,8 +1329,20 @@ local function updateIntent(self, assist, dt)
     local doneAngle = math.min(85, math.max(RoadFollow.INTENT_DONE_DEG, 0.8 * (assist.intentTurnDeg or 0)))
     local onNewPath = assist.turnPathId ~= nil and assist.result ~= nil and assist.result.pathId ~= nil
         and assist.result.pathId ~= assist.turnPathId and not assist.result.turned
-    if angle * sign >= doneAngle or onNewPath or assist.intentMs >= RoadFollow.INTENT_TIMEOUT_MS then
-        log("signal done (%s, turned %.0f degrees)", assist.intent, angle)
+    -- like a car: the junction it was for has been passed (it was ahead, now it lies behind) and the vehicle goes straight again
+    assist.crossProbeMs = (assist.crossProbeMs or 0) + dt
+    if assist.crossProbeMs >= RoadFollow.INTENT_PROBE_MS then
+        assist.crossProbeMs = 0
+        assist.crossNear = crossingNear(self, hx, hz)
+    end
+    if assist.junctionAhead or assist.crossNear then
+        assist.intentSeen, assist.intentTravel = true, 0
+    elseif assist.intentSeen then
+        assist.intentTravel = (assist.intentTravel or 0) + (self:getLastSpeed() or 0) / 3.6 * dt / 1000
+    end
+    local straightOn = assist.intentSeen and (assist.intentTravel or 0) >= RoadFollow.INTENT_STRAIGHT_M and math.abs(angle) < RoadFollow.INTENT_STRAIGHT_DEG
+    if angle * sign >= doneAngle or onNewPath or straightOn or assist.intentMs >= RoadFollow.INTENT_TIMEOUT_MS then
+        log("signal done (%s, %s, turned %.0f degrees)", assist.intent, straightOn and "straight on past the junction" or "turn or timeout", angle)
         setTurnLights(self, nil)
         assist.intent = nil
     end
@@ -2198,6 +2245,7 @@ function RoadFollow.assistDrive(self, spec, dt)
     -- cross traffic: before the turn (or the T) give way to what is coming along the road about to be entered; once the
     -- stop line cannot be reached any more by braking, the vehicle is committed and goes on
     assist.giveWay = false
+    assist.junctionAhead = crossMouth ~= nil                 -- (the signal's end reads it: the junction ahead, then behind)
     scanCross(self, assist, result.points, crossMouth, RoadFollow.getIntent(self), vY, dt)
     if crossMouth ~= nil and (assist.crossHoldMs or 0) > 0 then
         local stopDistance = math.max(0, crossStop or 0)

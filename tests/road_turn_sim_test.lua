@@ -73,4 +73,32 @@ S.simulate(v, 12, function(veh)
 end)
 check("a crossing with the road going straight on: the vehicle drives across without a signal (past the crossing, still on the road)", stopped == nil and v.pos[1] > 220 and math.abs(v.pos[2]) < 1.5)
 
+-- a signal for a junction that is passed going straight on goes out afterwards, like a car's indicator (a branch to the right only: nothing to turn left into)
+local function rightBranchOnly()
+    store.clear()
+    store.add({ points = { { -200, 0 }, { 600, 0 } }, kind = "spline", source = "map", width = 7 })
+    store.add({ points = { { 200, 0 }, { 200, 300 } }, kind = "spline", source = "map", width = 7 })
+end
+rightBranchOnly()
+v = S.newVehicle(100, 0, 40)
+S.simulate(v, 1)
+RoadFollow.signal(v, "left")
+local lightWhileApproaching, outAt = nil, nil
+S.simulate(v, 20, function(veh)
+    if veh.pos[1] < 190 then lightWhileApproaching = veh.turnState end
+    if outAt == nil and veh.turnState == Lights.TURNLIGHT_OFF then outAt = veh.pos[1] end
+    if veh.pos[1] > 330 then return false end
+end)
+check("a left signal where there is nothing to the left: the light stays on up to the junction", lightWhileApproaching == Lights.TURNLIGHT_LEFT)
+check("... the vehicle drives straight across", v.pos[1] > 230 and math.abs(v.pos[2]) < 1.5)
+check("... and the light is out once the junction lies behind it (not before the junction, not a hundred metres later)", outAt ~= nil and outAt > 205 and outAt < 260)
+-- a light set with the game's own indicator key is read as the signal and goes out the same way
+rightBranchOnly()
+v = S.newVehicle(100, 0, 40)
+v.turnState = Lights.TURNLIGHT_LEFT
+S.simulate(v, 20, function(veh)
+    if veh.pos[1] > 330 then return false end
+end)
+check("an indicator set with the game's key: put out after the junction passed straight on (it used to stay on for ever)", v.turnState == Lights.TURNLIGHT_OFF and S.assistOf(v).intent == nil)
+
 finish("road_turn_sim_test")
