@@ -119,4 +119,8 @@ do
     check("the distance is shown to the nearest ten metres", H.junctionDistanceText(104) == "100 m" and H.junctionDistanceText(96) == "100 m" and H.junctionDistanceText(7) == "10 m")
 end
 
+check("on a field the junction picture is hidden", H.hiddenOnField(true, false) == true and H.hiddenOnField(true, nil) == true)
+check("... unless the assist is steering there", H.hiddenOnField(true, true) == false)
+check("... and on a road it is shown", H.hiddenOnField(false, false) == false and H.hiddenOnField(nil, false) == false)
+
 finish("road_hud_test")

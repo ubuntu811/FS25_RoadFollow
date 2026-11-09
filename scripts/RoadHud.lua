@@ -51,6 +51,12 @@ RoadHud.UNLIT = { 0.55, 0.6, 0.66, 0.45 }
 RoadHud.SET_MARK = { 0.9, 0.95, 1.0, 0.8 }
 
 -- What the full arc stands for: the set cruise speed, rounded up to a whole ten, never below the minimum.
+-- On farmland the junction picture is hidden (a road seen near the field is not a junction ahead): unless the assist is steering there (a course through open ground). The speedometer stays.
+RoadHud.HIDE_ON_FIELD = true
+function RoadHud.hiddenOnField(onField, engaged)
+    return RoadHud.HIDE_ON_FIELD and onField == true and engaged ~= true
+end
+
 function RoadHud.scaleFor(setKmh)
     if setKmh == nil or setKmh <= 0 then
         return 50

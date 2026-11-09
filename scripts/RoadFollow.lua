@@ -2567,6 +2567,19 @@ local function drawRows(result)
     end
 end
 
+-- Is the vehicle on farmland (and the assist not steering it): then no junction picture. One ground sample per 250 ms, not per frame.
+function RoadFollow.hudHiddenOnField(self, spec)
+    if not RoadHud.HIDE_ON_FIELD or self.rootNode == nil then
+        return false
+    end
+    if spec.fieldCheckAt == nil or g_time - spec.fieldCheckAt >= 250 then
+        spec.fieldCheckAt = g_time
+        local x, _, z = getWorldTranslation(self.rootNode)
+        spec.onFieldGround = isOnField(x, z)
+    end
+    return RoadHud.hiddenOnField(spec.onFieldGround, spec.assist ~= nil and spec.assist.engaged)
+end
+
 function RoadFollow:onDraw(isActiveForInput, isActiveForInputIgnoreSelection, isSelected)
     local spec = getSpec(self)
     -- the gauge is the speedometer of the vehicle the player drives: there with cruise control off too (then only the speed, no
@@ -2621,7 +2634,7 @@ function RoadFollow:onDraw(isActiveForInput, isActiveForInputIgnoreSelection, is
             print(string.format("[RoadFollow] HUD switched off after an error: %s (roadFollowHud switches it back on)", tostring(err)))
         end
         -- the next junction ahead: T, Y, +, a side road; blinking until a signal is given, then the way it leads into is green
-        local junction = RoadHud.junctionEnabled and RoadFollow.junctionInfo(self) or nil
+        local junction = RoadHud.junctionEnabled and not RoadFollow.hudHiddenOnField(self, spec) and RoadFollow.junctionInfo(self) or nil      -- (no junction picture on farmland: a road somewhere near the field is not a junction ahead)
         if junction ~= nil then
             local intent = nil
             if not assist.hazard then
