@@ -1,0 +1,45 @@
+name: Build
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y lua5.1 zip
+
+      - name: Check out the sibling mod the tests read (FS25_whatAmILookingAt, next to this one as on the dev machine)
+        run: git clone --depth 1 https://github.com/ubuntu811/FS25_whatAmILookingAt.git ../FS25_whatAmILookingAt
+
+      - name: Validate (Lua syntax, XML, tests)
+        run: |
+          set -e
+          for f in $(find . -name '*.lua' -not -path './build/*' -not -path './.git/*' -not -path './tests/*' -not -path './dev/*'); do lua5.1 -e "assert(loadfile('$f'))" || { echo "does not parse: $f"; exit 1; }; done
+          for f in $(find . -name '*.xml' -not -path './build/*' -not -path './.git/*' -not -path './dev/*'); do python3 -c "import sys,xml.dom.minidom as m; m.parse(sys.argv[1])" "$f" || { echo "not well formed: $f"; exit 1; }; done
+          for f in $(ls tests/*.lua 2>/dev/null); do lua5.1 "$f"; done
+
+      - name: Build mod
+        run: bash build/build.sh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: FS25_RoadFollow
+          path: build/FS25_RoadFollow.zip
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: build/FS25_RoadFollow.zip
